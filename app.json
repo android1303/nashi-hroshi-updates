@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Наші Гроші",
+    "slug": "nashi-hroshi",
+    "version": "1.0.2",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#141218"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Додатку потрібен доступ до Face ID / Touch ID для безпечного входу в Наші Гроші"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#141218"
+      },
+      "package": "com.android1303.nashihroshi",
+      "versionCode": 2,
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Дозволити вхід через Face ID у Наші Гроші"
+        }
+      ]
+    ]
+  }
+}
