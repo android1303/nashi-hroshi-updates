@@ -404,3 +404,121 @@ export async function analyzeTransactionsWithAI({
 
   throw lastError || new Error('Не вдалося з’єднатися з Gemini AI.');
 }
+
+/**
+ * ШІ-Аналітик: відповідає на будь-які запитання по транзакціях (напр. "Скільки витрачено за місяць на каву?")
+ */
+export async function askAIAnalytics({
+  apiKey,
+  question = '',
+  audioBase64 = null,
+  audioMimeType = 'audio/mp4',
+  transactions = [],
+  categories = [],
+  incomeGroups = []
+}) {
+  const cleanKey = String(
+    apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
+  ).trim();
+  if (!cleanKey) {
+    throw new Error('Вкажіть ключ Gemini API у Налаштуваннях додатку.');
+  }
+
+  // Формуємо компактний дамп операцій для економії токенів
+  const compactTx = transactions.slice(0, 400).map(t => ({
+    d: t.rawDate || t.date || '',
+    t: t.type === 'income' ? 'inc' : 'exp',
+    a: Number(t.amount) || 0,
+    c: t.category || '',
+    n: t.note || '',
+    u: t.author || ''
+  }));
+
+  const nowStr = new Date().toISOString().split('T')[0];
+
+  const prompt = `Ти — персональний фінансовий ШІ-аналітик сімейного бюджету «Наші Гроші».
+Поточна дата: ${nowStr}.
+Ось список операцій сім'ї (d = дата YYYY-MM-DD, t = exp (витрата) або inc (дохід), a = сума в грн, c = категорія, n = коментар/деталі, u = хто вніс):
+${JSON.stringify(compactTx)}
+
+ЗАВДАННЯ:
+Проаналізуй запитання користувача (текстове або голосове) та дай точну, дружню і структуровану відповідь українською мовою на основі реальних цифр зі списку операцій.
+- Враховуй як назву категорії (c), так і коментарі (n). Наприклад, якщо питають про "каву", шукай і в коментарях ("кава", "латте", "кав'ярня"), і в категорії "Ресторани/Кафе".
+- Якщо в базі основні операції за інший місяць (наприклад, серпень 2026), обов'язково вкажи це і порахуй суму за наявними даними.
+
+Поверни СТРОГО валідний JSON такого формату:
+{
+  "questionRecognized": "Текст запитання користувача",
+  "headline": "Короткий головний висновок з цифрою (напр.: На каву та кафе витрачено 450 ₴)",
+  "totalAmount": 450,
+  "operationsCount": 3,
+  "details": "Детальне пояснення по датах, категоріях або авторах (Андрій / Людмила)",
+  "matchedItems": [
+    { "date": "2026-08-09", "category": "Ресторани/Кафе", "note": "Кава", "amount": 50, "author": "Андрій" }
+  ],
+  "tip": "Коротка корисна порада або спостереження на 1 речення"
+}`;
+
+  const parts = [{ text: prompt }];
+  if (audioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: audioMimeType,
+        data: audioBase64
+      }
+    });
+    parts.push({ text: 'Розпізнай голосове запитання користувача та поверни JSON-звіт аналітики.' });
+  } else {
+    parts.push({ text: `Запитання користувача: "${question.trim()}"` });
+  }
+
+  let modelsToTry = cachedWorkingModel
+    ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
+    : [...PREFERRED_GEMINI_MODELS];
+
+  let lastError = null;
+
+  for (const modelName of modelsToTry) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json'
+          }
+        })
+      });
+
+      const resData = await response.json();
+      if (!response.ok) {
+        const errMsg = resData?.error?.message || `HTTP ${response.status}`;
+        if (response.status === 404 || response.status === 503 || response.status === 429) {
+          lastError = new Error(errMsg);
+          continue;
+        }
+        throw new Error(errMsg);
+      }
+
+      const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (!rawText) continue;
+
+      cachedWorkingModel = modelName;
+      const cleaned = rawText
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+
+      return JSON.parse(cleaned);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('Не вдалося сформувати ШІ-звіт.');
+}
+

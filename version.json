@@ -1,5 +1,5 @@
 {
-  "version": "1.0.6",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.6/app-release.apk",
-  "releaseNotes": "v1.0.6: Оновлено модель ШІ на актуальну серію Gemini 3.5 Flash-Lite / 3.8 Flash з автовизначенням моделей + примусовий LongPolling для миттєвої синхронізації Firebase на Android."
+  "version": "1.0.7",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.7/app-release.apk",
+  "releaseNotes": "v1.0.7: Додано нативний віджет для робочого столу Android («Наші Гроші — ШІ Віджет» з кнопками Голосом / По фото / Текст) та інтерактивний ШІ-Аналітик в екран Аналітики."
 }

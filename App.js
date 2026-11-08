@@ -174,6 +174,34 @@ export default function App() {
   }, [showAIModal, showTransModal, showSettModal, currentScreen]);
 
 
+  // Обробка натискань із віджета на робочому столі телефону (nashihroshi://ai?mode=voice|photo|text або nashihroshi://add)
+  useEffect(() => {
+    const handleWidgetUrl = (url) => {
+      if (!url || typeof url !== 'string') return;
+      if (url.includes('nashihroshi://ai')) {
+        let mode = 'voice';
+        if (url.includes('mode=photo')) mode = 'photo';
+        else if (url.includes('mode=text')) mode = 'text';
+        setAiInitialTab(mode);
+        setShowAIModal(true);
+      } else if (url.includes('nashihroshi://add')) {
+        handleOpenAddModal();
+      }
+    };
+
+    Linking.getInitialURL().then((initialUrl) => {
+      if (initialUrl) setTimeout(() => handleWidgetUrl(initialUrl), 400);
+    }).catch(() => {});
+
+    const sub = Linking.addEventListener('url', (event) => {
+      if (event && event.url) handleWidgetUrl(event.url);
+    });
+    return () => {
+      if (sub && sub.remove) sub.remove();
+    };
+  }, []);
+
+
   useEffect(() => { setHideBalance(hideBalanceDefault); }, [hideBalanceDefault]);
 
 
@@ -526,7 +554,7 @@ export default function App() {
             <CurrentMonthScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} showBudgetWidget={showBudgetWidget} plannedIncome={plannedIncome} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} budgetMode={budgetMode} handleOpenEditModal={handleOpenEditModal} promptDelete={(id) => {setItemToDelete(id); setDeleteModalVisible(true);}} onNavigate={navigateTo} onOpenAI={handleOpenAIModal} />
           )}
           {currentScreen === 'analytics' && (
-            <AnalyticsScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} showIcons={showIcons} globalUserFilter={globalUserFilter} onBack={() => navigateTo('main')} />
+            <AnalyticsScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} geminiApiKey={geminiApiKey} onBack={() => navigateTo('main')} />
           )}
           {currentScreen === 'budget' && (
             <BudgetScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} showIcons={showIcons} globalUserFilter={globalUserFilter} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} plannedIncome={plannedIncome} budgetMode={budgetMode} handleUpdateLimit={handleUpdateLimit} handleUpdatePlannedIncome={handleUpdatePlannedIncome} handleCopyLastMonthExpenses={handleCopyLastMonthExpenses} onBack={() => navigateTo('main')} updateSettings={updateSettings} />

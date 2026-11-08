@@ -1,4 +1,4 @@
-# Повний код проєкту «Наші Гроші» (v1.0.6)
+# Повний код проєкту «Наші Гроші» (v1.0.7)
 
 > Автоматично згенеровано: 2026-11-08 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -53,7 +53,8 @@
   "expo": {
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
-    "version": "1.0.6",
+    "scheme": "nashihroshi",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -77,7 +78,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 6,
+      "versionCode": 7,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -106,7 +107,8 @@
           "photosPermission": "Дозволити доступ до фото для сканування чеків",
           "cameraPermission": "Дозволити доступ до камери для фотографування чеків"
         }
-      ]
+      ],
+      "./plugins/withAndroidAIWidget"
     ]
   }
 }
@@ -569,6 +571,123 @@ export async function analyzeTransactionsWithAI({
   }
 
   throw lastError || new Error('Не вдалося з’єднатися з Gemini AI.');
+}
+
+/**
+ * ШІ-Аналітик: відповідає на будь-які запитання по транзакціях (напр. "Скільки витрачено за місяць на каву?")
+ */
+export async function askAIAnalytics({
+  apiKey,
+  question = '',
+  audioBase64 = null,
+  audioMimeType = 'audio/mp4',
+  transactions = [],
+  categories = [],
+  incomeGroups = []
+}) {
+  const cleanKey = String(
+    apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
+  ).trim();
+  if (!cleanKey) {
+    throw new Error('Вкажіть ключ Gemini API у Налаштуваннях додатку.');
+  }
+
+  // Формуємо компактний дамп операцій для економії токенів
+  const compactTx = transactions.slice(0, 400).map(t => ({
+    d: t.rawDate || t.date || '',
+    t: t.type === 'income' ? 'inc' : 'exp',
+    a: Number(t.amount) || 0,
+    c: t.category || '',
+    n: t.note || '',
+    u: t.author || ''
+  }));
+
+  const nowStr = new Date().toISOString().split('T')[0];
+
+  const prompt = `Ти — персональний фінансовий ШІ-аналітик сімейного бюджету «Наші Гроші».
+Поточна дата: ${nowStr}.
+Ось список операцій сім'ї (d = дата YYYY-MM-DD, t = exp (витрата) або inc (дохід), a = сума в грн, c = категорія, n = коментар/деталі, u = хто вніс):
+${JSON.stringify(compactTx)}
+
+ЗАВДАННЯ:
+Проаналізуй запитання користувача (текстове або голосове) та дай точну, дружню і структуровану відповідь українською мовою на основі реальних цифр зі списку операцій.
+- Враховуй як назву категорії (c), так і коментарі (n). Наприклад, якщо питають про "каву", шукай і в коментарях ("кава", "латте", "кав'ярня"), і в категорії "Ресторани/Кафе".
+- Якщо в базі основні операції за інший місяць (наприклад, серпень 2026), обов'язково вкажи це і порахуй суму за наявними даними.
+
+Поверни СТРОГО валідний JSON такого формату:
+{
+  "questionRecognized": "Текст запитання користувача",
+  "headline": "Короткий головний висновок з цифрою (напр.: На каву та кафе витрачено 450 ₴)",
+  "totalAmount": 450,
+  "operationsCount": 3,
+  "details": "Детальне пояснення по датах, категоріях або авторах (Андрій / Людмила)",
+  "matchedItems": [
+    { "date": "2026-08-09", "category": "Ресторани/Кафе", "note": "Кава", "amount": 50, "author": "Андрій" }
+  ],
+  "tip": "Коротка корисна порада або спостереження на 1 речення"
+}`;
+
+  const parts = [{ text: prompt }];
+  if (audioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: audioMimeType,
+        data: audioBase64
+      }
+    });
+    parts.push({ text: 'Розпізнай голосове запитання користувача та поверни JSON-звіт аналітики.' });
+  } else {
+    parts.push({ text: `Запитання користувача: "${question.trim()}"` });
+  }
+
+  let modelsToTry = cachedWorkingModel
+    ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
+    : [...PREFERRED_GEMINI_MODELS];
+
+  let lastError = null;
+
+  for (const modelName of modelsToTry) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json'
+          }
+        })
+      });
+
+      const resData = await response.json();
+      if (!response.ok) {
+        const errMsg = resData?.error?.message || `HTTP ${response.status}`;
+        if (response.status === 404 || response.status === 503 || response.status === 429) {
+          lastError = new Error(errMsg);
+          continue;
+        }
+        throw new Error(errMsg);
+      }
+
+      const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (!rawText) continue;
+
+      cachedWorkingModel = modelName;
+      const cleaned = rawText
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+
+      return JSON.parse(cleaned);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('Не вдалося сформувати ШІ-звіт.');
 }
 ```
 
@@ -2525,113 +2644,860 @@ const styles = StyleSheet.create({
 
 ---
 
-## 10. Екран річної аналітики (src/screens/AnalyticsScreen.js)
+## 10. Екран річної аналітики та ШІ-Аналітика (src/screens/AnalyticsScreen.js)
 **Файл:** `src/screens/AnalyticsScreen.js`
 
 ```javascript
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useMemo, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { askAIAnalytics } from '../services/ai';
 
-export default function AnalyticsScreen({ 
-  theme, 
-  isLight, 
-  bgColor, 
-  cardBg, 
-  borderColor, 
-  hideBalance, 
-  transactions = [], 
-  categories = [], 
-  incomeGroups = [], 
-  showIcons = true, 
-  globalUserFilter = 'all', 
-  onBack 
+let Audio = null;
+try { Audio = require('expo-av').Audio; } catch (e) {}
+let FileSystem = null;
+try { FileSystem = require('expo-file-system'); } catch (e) {}
+
+const QUICK_CHIPS = [
+  '☕ Скільки на каву та кафе?',
+  '🛒 Скільки на продукти?',
+  '⛽ Витрати на авто та пальне',
+  '🏆 Топ-5 найбільших витрат',
+  '👥 Хто скільки витратив?'
+];
+
+const CATEGORY_COLORS = [
+  '#4CAF50', '#2196F3', '#FF9800', '#E91E63', '#9C27B0',
+  '#00BCD4', '#FF5722', '#3F51B5', '#009688', '#FFC107'
+];
+
+export default function AnalyticsScreen({
+  theme,
+  isLight,
+  bgColor,
+  cardBg,
+  borderColor,
+  hideBalance,
+  transactions = [],
+  categories = [],
+  incomeGroups = [],
+  showIcons = true,
+  globalUserFilter = 'all',
+  geminiApiKey = '',
+  onBack
 }) {
-  const now = new Date();
-  const currentYear = now.getFullYear();
+  const currentYearStr = new Date().getFullYear().toString();
 
-  // Фільтруємо операції поточного року
-  const yearTransactions = transactions.filter(t => {
-    if (globalUserFilter !== 'all' && t.author !== globalUserFilter) return false;
-    if (t.rawDate) {
-      const parts = t.rawDate.split('-');
-      if (parts.length === 3) {
-        return parseInt(parts[0], 10) === currentYear;
+  // Визначення доступних років та дефолтного року (з найбільшою кількістю операцій)
+  const { availableYears, defaultYear } = useMemo(() => {
+    const counts = {};
+    transactions.forEach(t => {
+      if (t.date && t.date.length >= 4) {
+        const y = t.date.substring(0, 4);
+        counts[y] = (counts[y] || 0) + 1;
+      }
+    });
+    if (!counts[currentYearStr]) {
+      counts[currentYearStr] = 0;
+    }
+    const years = Object.keys(counts).sort((a, b) => b.localeCompare(a));
+    let bestYear = currentYearStr;
+    let maxCount = -1;
+    years.forEach(y => {
+      if (counts[y] > maxCount) {
+        maxCount = counts[y];
+        bestYear = y;
+      }
+    });
+    return { availableYears: years, defaultYear: bestYear };
+  }, [transactions, currentYearStr]);
+
+  const [selectedYear, setSelectedYear] = useState(defaultYear);
+
+  // Стан ШІ-Аналітика
+  const [questionInput, setQuestionInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiReport, setAiReport] = useState(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recordingRef = useRef(null);
+
+  // Фільтрація транзакцій за вибраним роком (або всіма) та глобальним фільтром автора
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter(t => {
+      const matchYear = selectedYear === 'all' ? true : (t.date && t.date.startsWith(selectedYear));
+      const matchUser = globalUserFilter === 'all' ? true : t.author === globalUserFilter;
+      return matchYear && matchUser;
+    });
+  }, [transactions, selectedYear, globalUserFilter]);
+
+  // Річний баланс
+  const { yearlyIncome, yearlyExpense, netBalance } = useMemo(() => {
+    let inc = 0;
+    let exp = 0;
+    filteredTransactions.forEach(t => {
+      const amt = Number(t.amount) || 0;
+      if (t.type === 'income') inc += amt;
+      else exp += amt;
+    });
+    return { yearlyIncome: inc, yearlyExpense: exp, netBalance: inc - exp };
+  }, [filteredTransactions]);
+
+  // Допоміжна функція для пошуку іконки категорії
+  const getCategoryIcon = (catName) => {
+    if (!catName) return 'pricetag-outline';
+    for (const group of categories) {
+      if (group.name === catName && group.icon) return group.icon;
+      if (Array.isArray(group.subcategories)) {
+        const sub = group.subcategories.find(s => (typeof s === 'object' ? s.name === catName : s === catName));
+        if (sub) {
+          return (typeof sub === 'object' && sub.icon) ? sub.icon : (group.icon || 'pricetag-outline');
+        }
       }
     }
-    return true;
-  });
+    return 'pricetag-outline';
+  };
 
-  let yearIncome = 0;
-  let yearExpense = 0;
-  yearTransactions.forEach(t => {
-    if (t.type === 'income') yearIncome += t.amount;
-    else yearExpense += t.amount;
-  });
-  const yearBalance = yearIncome - yearExpense;
+  // Реальний розподіл витрат за категоріями
+  const categoryBreakdown = useMemo(() => {
+    const map = {};
+    filteredTransactions.forEach(t => {
+      if (t.type === 'income') return;
+      const cat = t.category || t.group || 'Інше';
+      const amt = Number(t.amount) || 0;
+      if (!map[cat]) {
+        map[cat] = { name: cat, amount: 0, count: 0, icon: getCategoryIcon(cat) };
+      }
+      map[cat].amount += amt;
+      map[cat].count += 1;
+    });
+    const list = Object.values(map).sort((a, b) => b.amount - a.amount);
+    return list.map((item, idx) => ({
+      ...item,
+      percent: yearlyExpense > 0 ? Math.round((item.amount / yearlyExpense) * 1000) / 10 : 0,
+      color: CATEGORY_COLORS[idx % CATEGORY_COLORS.length]
+    }));
+  }, [filteredTransactions, yearlyExpense, categories]);
 
-  const bg = cardBg || theme.card;
-  const border = borderColor || theme.border;
+  const formatMoney = (val) => {
+    if (hideBalance) return '•••• ₴';
+    const num = Number(val) || 0;
+    return `${num.toLocaleString('uk-UA')} ₴`;
+  };
+
+  // Запит до ШІ-Аналітика
+  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/m4a') => {
+    const q = customQuestion !== null ? customQuestion : questionInput.trim();
+    if (!q && !audioBase64) return;
+
+    if (customQuestion !== null) {
+      setQuestionInput(customQuestion);
+    }
+
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const result = await askAIAnalytics({
+        question: q,
+        audioBase64,
+        mimeType,
+        transactions: filteredTransactions.length > 0 ? filteredTransactions : transactions,
+        categories,
+        apiKey: geminiApiKey
+      });
+      setAiReport(result);
+      if (result?.questionRecognized && audioBase64) {
+        setQuestionInput(result.questionRecognized);
+      }
+    } catch (err) {
+      setAiError(err?.message || 'Не вдалося отримати відповідь від ШІ-Аналітика.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  // Запис голосу через expo-av
+  const handleToggleVoice = async () => {
+    if (!Audio) {
+      setAiError('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
+      return;
+    }
+
+    if (isRecording) {
+      try {
+        setIsRecording(false);
+        const rec = recordingRef.current;
+        if (!rec) return;
+        await rec.stopAndUnloadAsync();
+        const uri = rec.getURI();
+        recordingRef.current = null;
+
+        if (uri && FileSystem) {
+          const base64 = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType?.Base64 || 'base64'
+          });
+          const mime = Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4';
+          await handleAskAI('', base64, mime);
+        } else {
+          setAiError('Не вдалося прочитати аудіофайл.');
+        }
+      } catch (e) {
+        setAiError('Помилка зупинки запису: ' + (e?.message || ''));
+      }
+    } else {
+      try {
+        setAiError('');
+        const perm = await Audio.requestPermissionsAsync();
+        if (perm.status !== 'granted') {
+          setAiError('Немає дозволу на використання мікрофона.');
+          return;
+        }
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true
+        });
+        const { recording } = await Audio.Recording.createAsync(
+          Audio.RecordingOptionsPresets.HIGH_QUALITY
+        );
+        recordingRef.current = recording;
+        setIsRecording(true);
+      } catch (e) {
+        setAiError('Не вдалося почати запис: ' + (e?.message || ''));
+        setIsRecording(false);
+      }
+    }
+  };
+
+  const textColor = theme?.text || (isLight ? '#1A1A1A' : '#FFFFFF');
+  const subTextColor = theme?.subText || (isLight ? '#666666' : '#AAAAAA');
+  const accentColor = theme?.accent || '#4CAF50';
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 100 }}>
-      {/* Верхня панель з кнопкою «Назад» */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        {onBack ? (
-          <TouchableOpacity 
-            onPress={onBack} 
-            style={[styles.backBtn, { backgroundColor: bg, borderColor: border, borderWidth: 1 }]}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={20} color={theme.text} />
-          </TouchableOpacity>
-        ) : <View style={{ width: 38 }} />}
-        <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 18 }]}>
-          Аналітика за {currentYear} рік
-        </Text>
-        <View style={{ width: 38 }} />
-      </View>
-
-      <View style={[styles.card, { backgroundColor: bg, borderColor: border, padding: 16, marginBottom: 14 }]}>
-        <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 11, marginBottom: 4 }]}>Річний баланс</Text>
-        <Text style={[styles.fontJakartaBold, { color: yearBalance >= 0 ? theme.income : theme.expense, fontSize: 26, marginBottom: 14 }]}>
-          {hideBalance ? '••••••' : `${yearBalance.toLocaleString('uk-UA')} ₴`}
-        </Text>
-        
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: border, paddingTop: 12 }}>
-          <View>
-            <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 10, marginBottom: 2 }]}>Доходи за рік</Text>
-            <Text style={[styles.fontJakartaBold, { color: theme.income, fontSize: 14 }]}>
-              {hideBalance ? '••••' : `+${yearIncome.toLocaleString('uk-UA')} ₴`}
-            </Text>
-          </View>
-          <View style={{ alignItems: 'flex-end' }}>
-            <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 10, marginBottom: 2 }]}>Витрати за рік</Text>
-            <Text style={[styles.fontJakartaBold, { color: theme.expense, fontSize: 14 }]}>
-              {hideBalance ? '••••' : `-${yearExpense.toLocaleString('uk-UA')} ₴`}
-            </Text>
-          </View>
+    <ScrollView style={[styles.container, { backgroundColor: bgColor }]} contentContainerStyle={styles.contentContainer}>
+      {/* Шапка та перемикач року */}
+      <View style={styles.headerRow}>
+        <View style={styles.headerTitleWrap}>
+          {onBack && (
+            <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+              <Ionicons name="arrow-back" size={22} color={textColor} />
+            </TouchableOpacity>
+          )}
+          <Text style={[styles.screenTitle, { color: textColor }]}>Аналітика бюджету</Text>
         </View>
       </View>
 
-      <View style={[styles.card, { backgroundColor: bg, borderColor: border, padding: 24, alignItems: 'center', justifyContent: 'center' }]}>
-        <Ionicons name="bar-chart-outline" size={36} color={theme.primary} style={{ marginBottom: 10 }} />
-        <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 14, textAlign: 'center', marginBottom: 6 }]}>
-          Розподіл витрат за категоріями
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.yearTabsScroll} contentContainerStyle={styles.yearTabsContainer}>
+        {availableYears.map(yr => {
+          const active = selectedYear === yr;
+          return (
+            <TouchableOpacity
+              key={yr}
+              onPress={() => setSelectedYear(yr)}
+              style={[
+                styles.yearTab,
+                { backgroundColor: active ? accentColor : cardBg, borderColor: active ? accentColor : borderColor }
+              ]}
+            >
+              <Text style={[styles.yearTabText, { color: active ? '#FFFFFF' : textColor }]}>{yr} рік</Text>
+            </TouchableOpacity>
+          );
+        })}
+        <TouchableOpacity
+          onPress={() => setSelectedYear('all')}
+          style={[
+            styles.yearTab,
+            { backgroundColor: selectedYear === 'all' ? accentColor : cardBg, borderColor: selectedYear === 'all' ? accentColor : borderColor }
+          ]}
+        >
+          <Text style={[styles.yearTabText, { color: selectedYear === 'all' ? '#FFFFFF' : textColor }]}>Весь час</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
+      {/* БЛОК 1: Картка «🤖 ШІ-Аналітик бюджету» */}
+      <View style={[styles.card, { backgroundColor: cardBg, borderColor }]}>
+        <View style={styles.cardHeaderRow}>
+          <Text style={[styles.cardTitle, { color: textColor }]}>🤖 ШІ-Аналітик бюджету</Text>
+          {isRecording && (
+            <View style={styles.recordingBadge}>
+              <Text style={styles.recordingBadgeText}>● Запис...</Text>
+            </View>
+          )}
+        </View>
+        <Text style={[styles.cardSubtitle, { color: subTextColor }]}>
+          Запитайте текстом або голосом про будь-які витрати, товари чи категорії
         </Text>
-        <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 12, textAlign: 'center', lineHeight: 18 }]}>
-          Тут відображається деталізована статистика та графіки розподілу витрат і доходів за поточний рік.
+
+        {/* Поле вводу + кнопки 🎙 та ✨ */}
+        <View style={styles.inputRow}>
+          <TextInput
+            value={questionInput}
+            onChangeText={setQuestionInput}
+            placeholder="Напр.: Скільки витрачено за місяць на каву?"
+            placeholderTextColor={subTextColor}
+            style={[
+              styles.questionInput,
+              { color: textColor, borderColor, backgroundColor: isLight ? '#F5F7FA' : '#1E1E1E' }
+            ]}
+            onSubmitEditing={() => handleAskAI()}
+          />
+          <TouchableOpacity
+            onPress={handleToggleVoice}
+            style={[
+              styles.iconActionBtn,
+              { backgroundColor: isRecording ? '#E53935' : (isLight ? '#EFEFEF' : '#2C2C2C'), borderColor }
+            ]}
+            disabled={aiLoading}
+          >
+            <Text style={styles.btnEmoji}>{isRecording ? '⏹' : '🎙'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => handleAskAI()}
+            style={[styles.iconActionBtn, { backgroundColor: accentColor, borderColor: accentColor }]}
+            disabled={aiLoading}
+          >
+            {aiLoading ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.btnEmoji}>✨</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Швидкі чіпи-запити */}
+        <View style={styles.chipsWrap}>
+          {QUICK_CHIPS.map((chip, idx) => (
+            <TouchableOpacity
+              key={idx}
+              onPress={() => handleAskAI(chip)}
+              disabled={aiLoading}
+              style={[
+                styles.chipBtn,
+                { backgroundColor: isLight ? '#F0F4F8' : '#252830', borderColor }
+              ]}
+            >
+              <Text style={[styles.chipText, { color: textColor }]}>{chip}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Помилка ШІ */}
+        {!!aiError && (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle-outline" size={18} color="#E53935" />
+            <Text style={styles.errorText}>{aiError}</Text>
+          </View>
+        )}
+
+        {/* Стан завантаження */}
+        {aiLoading && (
+          <View style={styles.loadingBox}>
+            <ActivityIndicator size="small" color={accentColor} />
+            <Text style={[styles.loadingText, { color: subTextColor }]}>Аналізую транзакції...</Text>
+          </View>
+        )}
+
+        {/* Результат звіту aiReport */}
+        {!aiLoading && aiReport && (
+          <View style={[styles.reportCard, { backgroundColor: isLight ? '#F8FAFC' : '#1B1E24', borderColor }]}>
+            {!!aiReport.questionRecognized && (
+              <Text style={[styles.recognizedQuery, { color: subTextColor }]}>
+                Запит: «{aiReport.questionRecognized}»
+              </Text>
+            )}
+
+            <View style={styles.reportHeaderRow}>
+              <Text style={[styles.reportHeadline, { color: textColor }]}>
+                {aiReport.headline || 'Результат аналізу'}
+              </Text>
+              <View style={[styles.reportTotalBadge, { backgroundColor: accentColor }]}>
+                <Text style={styles.reportTotalText}>
+                  {hideBalance ? '•••• ₴' : `${(Number(aiReport.totalAmount) || 0).toLocaleString('uk-UA')} ₴`}
+                </Text>
+                <Text style={styles.reportCountText}>
+                  {aiReport.operationsCount || 0} оп.
+                </Text>
+              </View>
+            </View>
+
+            {!!aiReport.details && (
+              <Text style={[styles.reportDetails, { color: textColor }]}>
+                {aiReport.details}
+              </Text>
+            )}
+
+            {/* Список знайдених операцій */}
+            {Array.isArray(aiReport.matchedItems) && aiReport.matchedItems.length > 0 && (
+              <View style={[styles.matchedList, { borderTopColor: borderColor }]}>
+                <Text style={[styles.matchedTitle, { color: subTextColor }]}>
+                  Знайдені операції ({aiReport.matchedItems.length}):
+                </Text>
+                {aiReport.matchedItems.map((item, i) => (
+                  <View key={i} style={[styles.matchedItemRow, { borderBottomColor: borderColor }]}>
+                    <View style={styles.matchedLeft}>
+                      <Text style={[styles.matchedCategory, { color: textColor }]} numberOfLines={1}>
+                        {item.category || 'Без категорії'}
+                        {item.note ? ` — ${item.note}` : ''}
+                      </Text>
+                      <Text style={[styles.matchedMeta, { color: subTextColor }]}>
+                        {item.date || '—'} {item.author ? `• ${item.author}` : ''}
+                      </Text>
+                    </View>
+                    <Text style={[styles.matchedAmount, { color: textColor }]}>
+                      {formatMoney(item.amount)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Порада з іконкою лампочки */}
+            {!!aiReport.tip && (
+              <View style={[styles.tipBox, { backgroundColor: isLight ? '#FFF8E1' : '#2C2612' }]}>
+                <Ionicons name="bulb-outline" size={20} color="#FFA000" style={styles.tipIcon} />
+                <Text style={[styles.tipText, { color: isLight ? '#5D4037' : '#FFE082' }]}>
+                  {aiReport.tip}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+
+      {/* БЛОК 2: Картка Річного балансу */}
+      <View style={[styles.card, { backgroundColor: cardBg, borderColor }]}>
+        <Text style={[styles.cardTitle, { color: textColor }]}>
+          📊 Баланс ({selectedYear === 'all' ? 'Весь час' : `${selectedYear} рік`})
         </Text>
+
+        <View style={styles.balanceGrid}>
+          <View style={[styles.balanceItem, { backgroundColor: isLight ? '#E8F5E9' : '#142918' }]}>
+            <Text style={[styles.balanceLabel, { color: subTextColor }]}>Доходи</Text>
+            <Text style={[styles.balanceValue, { color: '#4CAF50' }]}>
+              +{formatMoney(yearlyIncome)}
+            </Text>
+          </View>
+
+          <View style={[styles.balanceItem, { backgroundColor: isLight ? '#FFEBEE' : '#2D1618' }]}>
+            <Text style={[styles.balanceLabel, { color: subTextColor }]}>Витрати</Text>
+            <Text style={[styles.balanceValue, { color: '#F44336' }]}>
+              -{formatMoney(yearlyExpense)}
+            </Text>
+          </View>
+        </View>
+
+        <View style={[styles.netBalanceRow, { borderTopColor: borderColor }]}>
+          <Text style={[styles.netBalanceLabel, { color: textColor }]}>Чистий баланс:</Text>
+          <Text
+            style={[
+              styles.netBalanceValue,
+              { color: netBalance >= 0 ? '#4CAF50' : '#F44336' }
+            ]}
+          >
+            {netBalance >= 0 ? '+' : ''}{formatMoney(netBalance)}
+          </Text>
+        </View>
+      </View>
+
+      {/* БЛОК 3: Реальний розподіл витрат за категоріями */}
+      <View style={[styles.card, { backgroundColor: cardBg, borderColor }]}>
+        <View style={styles.cardHeaderRow}>
+          <Text style={[styles.cardTitle, { color: textColor }]}>
+            🗂 Розподіл витрат за категоріями
+          </Text>
+          <Text style={[styles.totalCategoriesCount, { color: subTextColor }]}>
+            {categoryBreakdown.length} кат.
+          </Text>
+        </View>
+
+        {categoryBreakdown.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Ionicons name="pie-chart-outline" size={36} color={subTextColor} />
+            <Text style={[styles.emptyText, { color: subTextColor }]}>
+              Немає витрат за вибраний період
+            </Text>
+          </View>
+        ) : (
+          categoryBreakdown.map((cat, idx) => (
+            <View key={cat.name + idx} style={styles.categoryItem}>
+              <View style={styles.categoryTopRow}>
+                <View style={styles.categoryNameWrap}>
+                  {showIcons && (
+                    <View style={[styles.categoryIconCircle, { backgroundColor: cat.color + '22' }]}>
+                      <Ionicons name={cat.icon || 'pricetag-outline'} size={16} color={cat.color} />
+                    </View>
+                  )}
+                  <Text style={[styles.categoryName, { color: textColor }]} numberOfLines={1}>
+                    {cat.name}
+                  </Text>
+                  <Text style={[styles.categoryOpsCount, { color: subTextColor }]}>
+                    ({cat.count})
+                  </Text>
+                </View>
+
+                <View style={styles.categoryRightWrap}>
+                  <Text style={[styles.categoryAmount, { color: textColor }]}>
+                    {formatMoney(cat.amount)}
+                  </Text>
+                  <Text style={[styles.categoryPercent, { color: cat.color }]}>
+                    {cat.percent}%
+                  </Text>
+                </View>
+              </View>
+
+              {/* Кольоровий прогрес-бар */}
+              <View style={[styles.progressTrack, { backgroundColor: isLight ? '#E2E8F0' : '#2D3139' }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.min(Math.max(cat.percent, 2), 100)}%`,
+                      backgroundColor: cat.color
+                    }
+                  ]}
+                />
+              </View>
+            </View>
+          ))
+        )}
       </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  fontJakarta: { fontWeight: '400' },
-  fontJakartaBold: { fontWeight: '700' },
-  card: { borderRadius: 16, borderWidth: 1 },
-  backBtn: { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  container: {
+    flex: 1
+  },
+  contentContainer: {
+    padding: 14,
+    paddingBottom: 40
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10
+  },
+  headerTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center'
+  },
+  backBtn: {
+    marginRight: 10,
+    padding: 4
+  },
+  screenTitle: {
+    fontSize: 20,
+    fontWeight: 'bold'
+  },
+  yearTabsScroll: {
+    marginBottom: 14
+  },
+  yearTabsContainer: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  yearTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 18,
+    borderWidth: 1,
+    marginRight: 8
+  },
+  yearTabText: {
+    fontSize: 13,
+    fontWeight: '600'
+  },
+  card: {
+    padding: 15,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 16
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: 'bold'
+  },
+  cardSubtitle: {
+    fontSize: 12,
+    marginBottom: 12
+  },
+  recordingBadge: {
+    backgroundColor: '#E53935',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10
+  },
+  recordingBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: 'bold'
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12
+  },
+  questionInput: {
+    flex: 1,
+    height: 42,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 14
+  },
+  iconActionBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  btnEmoji: {
+    fontSize: 18
+  },
+  chipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  chipBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 4
+  },
+  chipText: {
+    fontSize: 12,
+    fontWeight: '500'
+  },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFEBEE',
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 10,
+    gap: 6
+  },
+  errorText: {
+    color: '#C62828',
+    fontSize: 12,
+    flex: 1
+  },
+  loadingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    gap: 8
+  },
+  loadingText: {
+    fontSize: 13
+  },
+  reportCard: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1
+  },
+  recognizedQuery: {
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginBottom: 6
+  },
+  reportHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 8
+  },
+  reportHeadline: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    flex: 1
+  },
+  reportTotalBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    alignItems: 'flex-end'
+  },
+  reportTotalText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold'
+  },
+  reportCountText: {
+    color: '#E8F5E9',
+    fontSize: 10,
+    marginTop: 1
+  },
+  reportDetails: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 10
+  },
+  matchedList: {
+    borderTopWidth: 1,
+    paddingTop: 8,
+    marginTop: 4
+  },
+  matchedTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6
+  },
+  matchedItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth
+  },
+  matchedLeft: {
+    flex: 1,
+    marginRight: 8
+  },
+  matchedCategory: {
+    fontSize: 13,
+    fontWeight: '500'
+  },
+  matchedMeta: {
+    fontSize: 11,
+    marginTop: 2
+  },
+  matchedAmount: {
+    fontSize: 13,
+    fontWeight: 'bold'
+  },
+  tipBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 10
+  },
+  tipIcon: {
+    marginRight: 8
+  },
+  tipText: {
+    fontSize: 12,
+    flex: 1,
+    lineHeight: 17
+  },
+  balanceGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    marginBottom: 12
+  },
+  balanceItem: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 10
+  },
+  balanceLabel: {
+    fontSize: 12,
+    marginBottom: 4
+  },
+  balanceValue: {
+    fontSize: 16,
+    fontWeight: 'bold'
+  },
+  netBalanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    paddingTop: 10
+  },
+  netBalanceLabel: {
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  netBalanceValue: {
+    fontSize: 16,
+    fontWeight: 'bold'
+  },
+  totalCategoriesCount: {
+    fontSize: 12
+  },
+  emptyBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 24,
+    gap: 8
+  },
+  emptyText: {
+    fontSize: 13
+  },
+  categoryItem: {
+    marginTop: 12
+  },
+  categoryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6
+  },
+  categoryNameWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 8
+  },
+  categoryIconCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8
+  },
+  categoryName: {
+    fontSize: 14,
+    fontWeight: '500',
+    flexShrink: 1
+  },
+  categoryOpsCount: {
+    fontSize: 12,
+    marginLeft: 4
+  },
+  categoryRightWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  categoryAmount: {
+    fontSize: 14,
+    fontWeight: 'bold'
+  },
+  categoryPercent: {
+    fontSize: 12,
+    fontWeight: '600',
+    minWidth: 40,
+    textAlign: 'right'
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden'
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 3
+  }
 });
 ```
 
@@ -3118,6 +3984,34 @@ export default function App() {
   }, [showAIModal, showTransModal, showSettModal, currentScreen]);
 
 
+  // Обробка натискань із віджета на робочому столі телефону (nashihroshi://ai?mode=voice|photo|text або nashihroshi://add)
+  useEffect(() => {
+    const handleWidgetUrl = (url) => {
+      if (!url || typeof url !== 'string') return;
+      if (url.includes('nashihroshi://ai')) {
+        let mode = 'voice';
+        if (url.includes('mode=photo')) mode = 'photo';
+        else if (url.includes('mode=text')) mode = 'text';
+        setAiInitialTab(mode);
+        setShowAIModal(true);
+      } else if (url.includes('nashihroshi://add')) {
+        handleOpenAddModal();
+      }
+    };
+
+    Linking.getInitialURL().then((initialUrl) => {
+      if (initialUrl) setTimeout(() => handleWidgetUrl(initialUrl), 400);
+    }).catch(() => {});
+
+    const sub = Linking.addEventListener('url', (event) => {
+      if (event && event.url) handleWidgetUrl(event.url);
+    });
+    return () => {
+      if (sub && sub.remove) sub.remove();
+    };
+  }, []);
+
+
   useEffect(() => { setHideBalance(hideBalanceDefault); }, [hideBalanceDefault]);
 
 
@@ -3470,7 +4364,7 @@ export default function App() {
             <CurrentMonthScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} showBudgetWidget={showBudgetWidget} plannedIncome={plannedIncome} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} budgetMode={budgetMode} handleOpenEditModal={handleOpenEditModal} promptDelete={(id) => {setItemToDelete(id); setDeleteModalVisible(true);}} onNavigate={navigateTo} onOpenAI={handleOpenAIModal} />
           )}
           {currentScreen === 'analytics' && (
-            <AnalyticsScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} showIcons={showIcons} globalUserFilter={globalUserFilter} onBack={() => navigateTo('main')} />
+            <AnalyticsScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} geminiApiKey={geminiApiKey} onBack={() => navigateTo('main')} />
           )}
           {currentScreen === 'budget' && (
             <BudgetScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} showIcons={showIcons} globalUserFilter={globalUserFilter} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} plannedIncome={plannedIncome} budgetMode={budgetMode} handleUpdateLimit={handleUpdateLimit} handleUpdatePlannedIncome={handleUpdatePlannedIncome} handleCopyLastMonthExpenses={handleCopyLastMonthExpenses} onBack={() => navigateTo('main')} updateSettings={updateSettings} />
@@ -3886,6 +4780,297 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 10, elevation: 20 
   },
 });
+```
+
+---
+
+## 13. Нативний віджет для робочого столу Android (plugins/withAndroidAIWidget.js)
+**Файл:** `plugins/withAndroidAIWidget.js`
+
+```javascript
+const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Expo Config Plugin, який автоматично створює нативний Android-віджет для робочого столу телефону
+ * з кнопками ШІ: «🎙 Голосом», «📷 Чек (Фото)», «💬 Текстом» та «➕ Додати».
+ * При натисканні на кнопку на робочому столі відкриває додаток одразу у потрібному режимі через Deep Link:
+ * nashihroshi://ai?mode=voice | nashihroshi://ai?mode=photo | nashihroshi://ai?mode=text | nashihroshi://add
+ */
+function withAndroidAIWidget(config) {
+  // 1. Додаємо <receiver> віджета та intent-filter для схеми nashihroshi:// у AndroidManifest.xml
+  config = withAndroidManifest(config, async (modConfig) => {
+    const manifest = modConfig.modResults.manifest;
+    const app = manifest.application && manifest.application[0];
+    if (!app) return modConfig;
+
+    // Переконуємось, що MainActivity підтримує deep link nashihroshi://
+    const mainActivity = (app.activity || []).find(
+      (a) => a.$['android:name'] === '.MainActivity'
+    );
+    if (mainActivity) {
+      mainActivity['intent-filter'] = mainActivity['intent-filter'] || [];
+      const hasScheme = mainActivity['intent-filter'].some((f) =>
+        (f.data || []).some((d) => d.$ && d.$['android:scheme'] === 'nashihroshi')
+      );
+      if (!hasScheme) {
+        mainActivity['intent-filter'].push({
+          action: [{ $: { 'android:name': 'android.intent.action.VIEW' } }],
+          category: [
+            { $: { 'android:name': 'android.intent.category.DEFAULT' } },
+            { $: { 'android:name': 'android.intent.category.BROWSABLE' } }
+          ],
+          data: [{ $: { 'android:scheme': 'nashihroshi' } }]
+        });
+      }
+    }
+
+    // Реєструємо AppWidgetProvider
+    app.receiver = app.receiver || [];
+    const widgetReceiverName = '.NashiHroshiWidgetProvider';
+    const alreadyExists = app.receiver.some(
+      (r) => r.$ && r.$['android:name'] === widgetReceiverName
+    );
+    if (!alreadyExists) {
+      app.receiver.push({
+        $: {
+          'android:name': widgetReceiverName,
+          'android:exported': 'true',
+          'android:label': 'Наші Гроші — ШІ Віджет'
+        },
+        'intent-filter': [
+          {
+            action: [
+              { $: { 'android:name': 'android.appwidget.action.APPWIDGET_UPDATE' } }
+            ]
+          }
+        ],
+        'meta-data': [
+          {
+            $: {
+              'android:name': 'android.appwidget.provider',
+              'android:resource': '@xml/nashi_hroshi_widget_info'
+            }
+          }
+        ]
+      });
+    }
+
+    return modConfig;
+  });
+
+  // 2. Генеруємо Java-клас провайдера та XML-ресурси віджета
+  config = withDangerousMod(config, [
+    'android',
+    async (modConfig) => {
+      const projectRoot = modConfig.modRequest.projectRoot;
+      const resDir = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res');
+      const layoutDir = path.join(resDir, 'layout');
+      const xmlDir = path.join(resDir, 'xml');
+      const drawableDir = path.join(resDir, 'drawable');
+      const javaDir = path.join(
+        projectRoot,
+        'android',
+        'app',
+        'src',
+        'main',
+        'java',
+        'com',
+        'android1303',
+        'nashihroshi'
+      );
+
+      fs.mkdirSync(layoutDir, { recursive: true });
+      fs.mkdirSync(xmlDir, { recursive: true });
+      fs.mkdirSync(drawableDir, { recursive: true });
+      fs.mkdirSync(javaDir, { recursive: true });
+
+      // Фон віджета (закруглений темний блок)
+      const widgetBgXml = `<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#1E1B24" />
+    <corners android:radius="22dp" />
+    <stroke android:width="1dp" android:color="#33D0BCFF" />
+</shape>`;
+      fs.writeFileSync(path.join(drawableDir, 'widget_bg.xml'), widgetBgXml, 'utf8');
+
+      // Фон акцентної кнопки «Голосом»
+      const btnPrimaryXml = `<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#D0BCFF" />
+    <corners android:radius="14dp" />
+</shape>`;
+      fs.writeFileSync(path.join(drawableDir, 'widget_btn_primary.xml'), btnPrimaryXml, 'utf8');
+
+      // Фон вторинних кнопок «По фото» та «Текст»
+      const btnSecondaryXml = `<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#2B2733" />
+    <corners android:radius="14dp" />
+    <stroke android:width="1dp" android:color="#22FFFFFF" />
+</shape>`;
+      fs.writeFileSync(path.join(drawableDir, 'widget_btn_secondary.xml'), btnSecondaryXml, 'utf8');
+
+      // Розмітка віджета (res/layout/nashi_hroshi_widget.xml)
+      const layoutXml = `<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="8dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="✨ Наші Гроші • ШІ-ввід"
+            android:textColor="#E6E1E5"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_widget_add"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="＋ Вручну"
+            android:textColor="#D0BCFF"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:paddingLeft="8dp"
+            android:paddingRight="4dp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:weightSum="3">
+
+        <TextView
+            android:id="@+id/btn_widget_voice"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/widget_btn_primary"
+            android:gravity="center"
+            android:text="🎙 Голосом"
+            android:textColor="#1E192B"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_widget_photo"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/widget_btn_secondary"
+            android:gravity="center"
+            android:text="📷 По фото"
+            android:textColor="#E6E1E5"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_widget_text"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_btn_secondary"
+            android:gravity="center"
+            android:text="💬 Текст"
+            android:textColor="#E6E1E5"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>`;
+      fs.writeFileSync(path.join(layoutDir, 'nashi_hroshi_widget.xml'), layoutXml, 'utf8');
+
+      // Метадані віджета (res/xml/nashi_hroshi_widget_info.xml)
+      const widgetInfoXml = `<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="60dp"
+    android:targetCellWidth="4"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="86400000"
+    android:initialLayout="@layout/nashi_hroshi_widget"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />`;
+      fs.writeFileSync(path.join(xmlDir, 'nashi_hroshi_widget_info.xml'), widgetInfoXml, 'utf8');
+
+      // Java-клас NashiHroshiWidgetProvider.java
+      const javaCode = `package com.android1303.nashihroshi;
+
+import android.app.PendingIntent;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProvider;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.widget.RemoteViews;
+
+public class NashiHroshiWidgetProvider extends AppWidgetProvider {
+
+    private static PendingIntent buildDeepLinkIntent(Context context, String uriStr, int reqCode) {
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uriStr));
+        intent.setPackage(context.getPackageName());
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        return PendingIntent.getActivity(context, reqCode, intent, flags);
+    }
+
+    @Override
+    public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
+        for (int appWidgetId : appWidgetIds) {
+            RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.nashi_hroshi_widget);
+
+            views.setOnClickPendingIntent(
+                R.id.btn_widget_voice,
+                buildDeepLinkIntent(context, "nashihroshi://ai?mode=voice", 101)
+            );
+            views.setOnClickPendingIntent(
+                R.id.btn_widget_photo,
+                buildDeepLinkIntent(context, "nashihroshi://ai?mode=photo", 102)
+            );
+            views.setOnClickPendingIntent(
+                R.id.btn_widget_text,
+                buildDeepLinkIntent(context, "nashihroshi://ai?mode=text", 103)
+            );
+            views.setOnClickPendingIntent(
+                R.id.btn_widget_add,
+                buildDeepLinkIntent(context, "nashihroshi://add", 104)
+            );
+
+            appWidgetManager.updateAppWidget(appWidgetId, views);
+        }
+    }
+}
+`;
+      fs.writeFileSync(path.join(javaDir, 'NashiHroshiWidgetProvider.java'), javaCode, 'utf8');
+
+      return modConfig;
+    }
+  ]);
+
+  return config;
+}
+
+module.exports = withAndroidAIWidget;
 ```
 
 ---

@@ -20,9 +20,10 @@ const FILES_TO_INCLUDE = [
   { relPath: 'src/constants.js', lang: 'javascript', title: '7. Категорії витрат, доходів та константи (src/constants.js)' },
   { relPath: 'src/components/AIAssistantModal.js', lang: 'javascript', title: '8. Модальне вікно ШІ-Асистента (src/components/AIAssistantModal.js)' },
   { relPath: 'src/screens/CurrentMonthScreen.js', lang: 'javascript', title: '9. Головний екран: 40% Дашборд-хаб, ШІ-віджет та список операцій (src/screens/CurrentMonthScreen.js)' },
-  { relPath: 'src/screens/AnalyticsScreen.js', lang: 'javascript', title: '10. Екран річної аналітики (src/screens/AnalyticsScreen.js)' },
+  { relPath: 'src/screens/AnalyticsScreen.js', lang: 'javascript', title: '10. Екран річної аналітики та ШІ-Аналітика (src/screens/AnalyticsScreen.js)' },
   { relPath: 'src/screens/BudgetScreen.js', lang: 'javascript', title: '11. Екран планування бюджету (src/screens/BudgetScreen.js)' },
-  { relPath: 'App.js', lang: 'javascript', title: '12. Головний файл додатку (App.js)' }
+  { relPath: 'App.js', lang: 'javascript', title: '12. Головний файл додатку (App.js)' },
+  { relPath: 'plugins/withAndroidAIWidget.js', lang: 'javascript', title: '13. Нативний віджет для робочого столу Android (plugins/withAndroidAIWidget.js)' }
 ];
 
 function generateFullProjectDoc() {
