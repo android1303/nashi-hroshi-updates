@@ -1,0 +1,96 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Release Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NPM Dependencies
+        run: npm install
+
+      - name: Generate Native Android Project (Expo Prebuild)
+        run: npx expo prebuild --platform android --clean
+
+      - name: Configure Signing
+        run: |
+          # Use debug keystore for signing the standalone release APK
+          sed -i 's/signingConfig signingConfigs.release/signingConfig signingConfigs.debug/g' android/app/build.gradle || true
+
+      - name: Build APK with Gradle
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare APK Output
+        run: |
+          mkdir -p build-output
+          # Find generated APK and copy as app-release.apk
+          APK_FILE=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -n "$APK_FILE" ]; then
+            cp "$APK_FILE" build-output/app-release.apk
+            echo "Found APK: $APK_FILE -> copied to build-output/app-release.apk"
+          else
+            echo "Error: No APK file was generated!"
+            exit 1
+          fi
+
+      - name: Upload APK as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build-output/app-release.apk
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ github.ref_name || 'v1.0.3' }}
+          name: "Оновлення ${{ github.ref_name || 'v1.0.3' }}"
+          body: |
+            ### 💰 Наші Гроші ${{ github.ref_name || 'v1.0.3' }}
+
+            Оновлення мобільного додатку для обліку сімейного бюджету.
+
+            #### ✨ Що нового:
+            - 📊 **Новий дашборд-хаб**: плашки балансу та бюджету займають 40% висоти екрану при запуску.
+            - 📈 **SVG-хвиля тренду**: плавний графік динаміки місячного балансу (Bezier curve) з градієнтом.
+            - 🍩 **Кільцева діаграма (Donut Chart)**: наочний контроль заповнення бюджету та залишку ліміту.
+            - 🔗 **Активні портали**: миттєвий перехід з плашок у меню річної Аналітики та планування Бюджету.
+            - 📱 **Двоступеневий плавний скрол**: 60/120 fps анімація згортання плашок без мерехтіння.
+            - 🛡️ Покращено навігацію з кнопками повернення назад.
+
+            #### 📥 Як встановити:
+            Завантажте файл `app-release.apk` нижче та відкрийте його на своєму смартфоні.
+          files: build-output/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,6 @@
 {
-  "versionCode": 2,
-  "versionName": "1.0.2",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.2/app-release.apk",
-  "changelog": "Повноцінне оновлення додатка через новий APK-файл!"
+  "versionCode": 3,
+  "versionName": "1.0.3",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.3/app-release.apk",
+  "changelog": "Новий дашборд-хаб: 40% висота плашок, інтерактивні SVG-графіки динаміки балансу, кільцева діаграма бюджету та швидкі переходи."
 }

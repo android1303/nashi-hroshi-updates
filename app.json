@@ -2,11 +2,13 @@
   "expo": {
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
       "backgroundColor": "#141218"
     },
     "ios": {
@@ -17,10 +19,11 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 2,
+      "versionCode": 3,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT"
