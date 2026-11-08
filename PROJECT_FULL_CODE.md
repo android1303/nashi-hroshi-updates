@@ -1,4 +1,4 @@
-# Повний код проєкту «Наші Гроші» (v1.0.5)
+# Повний код проєкту «Наші Гроші» (v1.0.6)
 
 > Автоматично згенеровано: 2026-11-08 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -53,7 +53,7 @@
   "expo": {
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -77,7 +77,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 5,
+      "versionCode": 6,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -131,7 +131,7 @@ registerRootComponent(App);
 
 ```javascript
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBk5MGK6IomPvWAFH7cyI44svqTHYyO1Is",
@@ -144,7 +144,17 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app);
+
+let firestoreDb;
+try {
+  firestoreDb = initializeFirestore(app, {
+    experimentalForceLongPolling: true
+  });
+} catch (e) {
+  firestoreDb = getFirestore(app);
+}
+
+export const db = firestoreDb;
 export default app;
 ```
 
@@ -156,11 +166,84 @@ export default app;
 ```javascript
 // Сервіс ШІ-асистента (Google Gemini Multimodal API) для розпізнавання голосу, фото чеків та тексту
 
-const GEMINI_MODELS = [
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-latest'
+const DEFAULT_FALLBACK_GEMINI_KEY = '';
+
+const PREFERRED_GEMINI_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-flash-lite-latest',
+  'gemini-flash-latest',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite'
 ];
+
+let cachedWorkingModel = null;
+
+/**
+ * Автоматичний пошук доступних моделей для ключа користувача через ListModels API
+ */
+async function discoverAvailableModels(cleanKey) {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const models = Array.isArray(data?.models) ? data.models : [];
+
+    // Фільтруємо моделі, які підтримують generateContent і не є вузькоспеціалізованими (tts, image-generation, embedding)
+    const supported = models
+      .filter(m => {
+        const methods = m.supportedGenerationMethods || [];
+        const name = (m.name || '').toLowerCase();
+        if (!methods.includes('generateContent')) return false;
+        if (
+          name.includes('embedding') ||
+          name.includes('aqa') ||
+          name.includes('tts') ||
+          name.includes('imagen') ||
+          name.includes('image') ||
+          name.includes('thinking') ||
+          name.includes('audio-dialog') ||
+          name.includes('robotics') ||
+          name.includes('computer-use') ||
+          name.includes('transcribe') ||
+          name.includes('deep-research') ||
+          name.includes('antigravity') ||
+          name.includes('lyria') ||
+          name.includes('banana')
+        ) {
+          return false;
+        }
+        return name.includes('gemini');
+      })
+      .map(m => m.name.replace(/^models\//, ''));
+
+    // Сортуємо: спочатку нові моделі серії 3.5 / 3.8 flash-lite та flash, які гарантовано доступні новим користувачам
+    supported.sort((a, b) => {
+      const score = (n) => {
+        if (n === 'gemini-3.5-flash-lite') return 110;
+        if (n === 'gemini-3.8-flash') return 105;
+        if (n === 'gemini-flash-lite-latest') return 100;
+        if (n === 'gemini-flash-latest') return 95;
+        if (n.includes('3.8-flash')) return 92;
+        if (n.includes('3.7-flash')) return 90;
+        if (n.includes('3.6-flash')) return 88;
+        if (n.includes('3.5-flash')) return 85;
+        if (n.includes('3.1-flash')) return 80;
+        if (n.includes('flash')) return 60;
+        if (n.includes('pro')) return 40;
+        return 10;
+      };
+      return score(b) - score(a);
+    });
+
+    return supported;
+  } catch (e) {
+    return [];
+  }
+}
 
 /**
  * Допоміжна функція для нормалізації категорії та підкатегорії відповідно до доступних у додатку
@@ -325,7 +408,7 @@ ${JSON.stringify(activeInc, null, 2)}
 }
 
 /**
- * Основна функція виклику Gemini API
+ * Основна функція виклику Gemini API з автовизначенням доступної моделі (gemini-3.5-flash-lite / gemini-3.8-flash)
  */
 export async function analyzeTransactionsWithAI({
   apiKey,
@@ -340,7 +423,9 @@ export async function analyzeTransactionsWithAI({
   incomeGroups = [],
   defaultAuthor = 'Андрій'
 }) {
-  const cleanKey = String(apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '').trim();
+  const cleanKey = String(
+    apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
+  ).trim();
   if (!cleanKey) {
     throw new Error('MISSING_API_KEY');
   }
@@ -385,83 +470,102 @@ export async function analyzeTransactionsWithAI({
     throw new Error('Немає даних для аналізу (запишіть голос, додайте фото або введіть текст).');
   }
 
-  const requestBody = {
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      temperature: 0.15,
-      responseMimeType: 'application/json'
-    }
-  };
+  // Спочатку пробуємо швидкі моделі серії 3.5-flash-lite / 3.8-flash
+  let modelsToTry = cachedWorkingModel
+    ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
+    : [...PREFERRED_GEMINI_MODELS];
 
   let lastError = null;
 
-  for (const modelName of GEMINI_MODELS) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-      });
+  const tryGenerateWithList = async (modelList) => {
+    for (const modelName of modelList) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              temperature: 0.15,
+              responseMimeType: 'application/json'
+            }
+          })
+        });
 
-      const resData = await response.json();
+        const resData = await response.json();
 
-      if (!response.ok) {
-        const errMsg = resData?.error?.message || `HTTP ${response.status}`;
-        // Якщо модель не знайдена (404), пробуємо наступну модель зі списку
-        if (response.status === 404) {
-          lastError = new Error(errMsg);
+        if (!response.ok) {
+          const errMsg = resData?.error?.message || `HTTP ${response.status}`;
+          if (response.status === 404 || response.status === 503 || response.status === 429) {
+            lastError = new Error(errMsg);
+            continue;
+          }
+          if (response.status === 400 && errMsg.toLowerCase().includes('api key')) {
+            throw new Error('Невірний Gemini API ключ. Перевірте його у Налаштуваннях.');
+          }
+          lastError = new Error(`Помилка Gemini API: ${errMsg}`);
           continue;
         }
-        if (response.status === 400 && errMsg.toLowerCase().includes('api key')) {
-          throw new Error('Невірний Gemini API ключ. Перевірте його у Налаштуваннях.');
+
+        const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (!rawText) {
+          lastError = new Error('ШІ повернув порожню відповідь.');
+          continue;
         }
-        throw new Error(`Помилка Gemini API: ${errMsg}`);
-      }
 
-      const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      if (!rawText) {
-        throw new Error('ШІ не зміг розпізнати дані. Спробуйте ще раз.');
-      }
+        cachedWorkingModel = modelName;
 
-      // Очищення можливих markdown блоків ```json ... ```
-      const cleanedJsonStr = rawText
-        .replace(/^```json\s*/i, '')
-        .replace(/^```\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
+        const cleanedJsonStr = rawText
+          .replace(/^```json\s*/i, '')
+          .replace(/^```\s*/i, '')
+          .replace(/\s*```$/i, '')
+          .trim();
 
-      let parsed;
-      try {
-        parsed = JSON.parse(cleanedJsonStr);
-      } catch (parseErr) {
-        const match = cleanedJsonStr.match(/\{[\s\S]*\}/);
-        if (match) {
-          parsed = JSON.parse(match[0]);
-        } else {
-          throw new Error('Не вдалося розібрати відповідь ШІ.');
+        let parsed;
+        try {
+          parsed = JSON.parse(cleanedJsonStr);
+        } catch (parseErr) {
+          const match = cleanedJsonStr.match(/\{[\s\S]*\}/);
+          if (match) {
+            parsed = JSON.parse(match[0]);
+          } else {
+            throw new Error('Не вдалося розібрати відповідь ШІ.');
+          }
         }
-      }
 
-      const rawList = Array.isArray(parsed)
-        ? parsed
-        : (Array.isArray(parsed.transactions) ? parsed.transactions : []);
+        const rawList = Array.isArray(parsed)
+          ? parsed
+          : (Array.isArray(parsed.transactions) ? parsed.transactions : []);
 
-      const normalizedTransactions = rawList
-        .map(item => normalizeTransactionItem(item, categories, incomeGroups, defaultAuthor))
-        .filter(item => item.amount > 0);
+        const normalizedTransactions = rawList
+          .map(item => normalizeTransactionItem(item, categories, incomeGroups, defaultAuthor))
+          .filter(item => item.amount > 0);
 
-      return {
-        transcript: parsed.transcript || '',
-        transactions: normalizedTransactions
-      };
-    } catch (err) {
-      lastError = err;
-      // Якщо це помилка ключа або мережі — не перебираємо інші моделі без потреби, крім 404
-      if (err.message && (err.message.includes('API ключ') || err.message === 'MISSING_API_KEY')) {
-        throw err;
+        return {
+          transcript: parsed.transcript || '',
+          transactions: normalizedTransactions
+        };
+      } catch (err) {
+        lastError = err;
+        if (err.message && (err.message.includes('API ключ') || err.message === 'MISSING_API_KEY')) {
+          throw err;
+        }
       }
     }
+    return null;
+  };
+
+  // Спроба 1: пріоритетний список моделей (gemini-3.5-flash-lite, gemini-3.8-flash тощо)
+  const firstResult = await tryGenerateWithList(modelsToTry);
+  if (firstResult) return firstResult;
+
+  // Спроба 2: якщо Google змінив назви моделей — автоматично опитуємо ListModels API
+  const discovered = await discoverAvailableModels(cleanKey);
+  const newModels = discovered.filter(m => !modelsToTry.includes(m));
+  if (newModels.length > 0) {
+    const secondResult = await tryGenerateWithList(newModels);
+    if (secondResult) return secondResult;
   }
 
   throw lastError || new Error('Не вдалося з’єднатися з Gemini AI.');
