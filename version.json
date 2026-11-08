@@ -1,6 +1,5 @@
 {
-  "versionCode": 4,
-  "versionName": "1.0.4",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.4/app-release.apk",
-  "changelog": "Підключено реальну синхронізацію Firebase (first-apk-469d4), новий дашборд-хаб (40%), SVG-графіка тренду та Donut-діаграма бюджету."
+  "version": "1.0.5",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.5/app-release.apk",
+  "releaseNotes": "v1.0.5: Додано ШІ-Асистент (Google Gemini) — голосове додавання витрат, сканер фото чеків та скріншотів банку, смарт-розбір тексту + хмарна синхронізація Firebase."
 }

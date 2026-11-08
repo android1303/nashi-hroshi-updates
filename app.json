@@ -2,7 +2,7 @@
   "expo": {
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -14,7 +14,10 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSFaceIDUsageDescription": "Додатку потрібен доступ до Face ID / Touch ID для безпечного входу в Наші Гроші"
+        "NSFaceIDUsageDescription": "Додатку потрібен доступ до Face ID / Touch ID для безпечного входу в Наші Гроші",
+        "NSMicrophoneUsageDescription": "Додатку потрібен доступ до мікрофона для голосового додавання витрат через ШІ",
+        "NSCameraUsageDescription": "Додатку потрібен доступ до камери для сканування чеків через ШІ",
+        "NSPhotoLibraryUsageDescription": "Додатку потрібен доступ до галереї для додавання фото чеків та скріншотів"
       }
     },
     "android": {
@@ -23,10 +26,14 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 4,
+      "versionCode": 5,
       "permissions": [
         "USE_BIOMETRIC",
-        "USE_FINGERPRINT"
+        "USE_FINGERPRINT",
+        "RECORD_AUDIO",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
@@ -34,6 +41,19 @@
         "expo-local-authentication",
         {
           "faceIDPermission": "Дозволити вхід через Face ID у Наші Гроші"
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Дозволити доступ до мікрофона для голосового вводу витрат"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Дозволити доступ до фото для сканування чеків",
+          "cameraPermission": "Дозволити доступ до камери для фотографування чеків"
         }
       ]
     ]

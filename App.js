@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TouchableOpacity, TextInput, Modal, 
   ScrollView, Platform, ActivityIndicator, Dimensions,
-  Switch, useColorScheme, BackHandler, StatusBar, Animated, PanResponder, Easing, KeyboardAvoidingView, LayoutAnimation 
+  Switch, useColorScheme, BackHandler, StatusBar, Animated, PanResponder, Easing, KeyboardAvoidingView, LayoutAnimation, Linking 
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,6 +21,7 @@ import { initialCategories, initialIncomeGroups, monthNames } from './src/consta
 import CurrentMonthScreen from './src/screens/CurrentMonthScreen';
 import BudgetScreen from './src/screens/BudgetScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
+import AIAssistantModal from './src/components/AIAssistantModal';
 
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -55,7 +56,11 @@ export default function App() {
   const [uiSettingsCollapsed, setUiSettingsCollapsed] = useState(true);
   const [securitySettingsCollapsed, setSecuritySettingsCollapsed] = useState(true);
   const [categoriesSettingsCollapsed, setCategoriesSettingsCollapsed] = useState(true);
+  const [aiSettingsCollapsed, setAiSettingsCollapsed] = useState(false);
   const [catSettingsTab, setCatSettingsTab] = useState('expense');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [showAIModal, setShowAIModal] = useState(false);
+  const [aiInitialTab, setAiInitialTab] = useState('voice');
 
 
   const [categories, setCategories] = useState(initialCategories);
@@ -158,6 +163,7 @@ export default function App() {
 
   useEffect(() => {
     const onBackPress = () => {
+      if (showAIModal) { setShowAIModal(false); return true; }
       if (showTransModal) { closeTransModal(); return true; }
       if (showSettModal) { closeSettModal(); return true; }
       if (currentScreen !== 'main') { navigateTo('main'); return true; }
@@ -165,7 +171,7 @@ export default function App() {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => backHandler.remove();
-  }, [showTransModal, showSettModal, currentScreen]);
+  }, [showAIModal, showTransModal, showSettModal, currentScreen]);
 
 
   useEffect(() => { setHideBalance(hideBalanceDefault); }, [hideBalanceDefault]);
@@ -256,6 +262,7 @@ export default function App() {
         if (data.hideBalanceDefault !== undefined) setHideBalanceDefault(data.hideBalanceDefault);
         if (data.biometricsEnabled !== undefined) setBiometricsEnabled(data.biometricsEnabled);
         if (data.showBudgetWidget !== undefined) setShowBudgetWidget(data.showBudgetWidget);
+        if (data.geminiApiKey !== undefined) setGeminiApiKey(data.geminiApiKey);
       } else {
         setCategories(initialCategories); setIncomeGroups(initialIncomeGroups);
       }
@@ -287,6 +294,7 @@ export default function App() {
     if (updates.personalCategoryLimits) setPersonalCategoryLimits(updates.personalCategoryLimits);
     if (updates.categories) setCategories(updates.categories);
     if (updates.incomeGroups) setIncomeGroups(updates.incomeGroups);
+    if (updates.geminiApiKey !== undefined) setGeminiApiKey(updates.geminiApiKey);
     try {
       await setDoc(doc(db, "settings", "categories"), updates, { merge: true });
     } catch (e) {}
@@ -424,6 +432,48 @@ export default function App() {
   };
 
 
+  const handleOpenAIModal = (tab = 'voice') => {
+    setAiInitialTab(tab);
+    setShowAIModal(true);
+  };
+
+
+  const handleSaveAITransactions = async (itemsList = []) => {
+    if (!Array.isArray(itemsList) || itemsList.length === 0) return;
+    const baseNow = Date.now();
+    for (let i = 0; i < itemsList.length; i++) {
+      const item = itemsList[i];
+      const numAmount = Number(item.amount) || 0;
+      if (numAmount <= 0) continue;
+
+      const targetDate = new Date();
+      if (item.dateOffsetDays) {
+        targetDate.setDate(targetDate.getDate() + Number(item.dateOffsetDays));
+      }
+      const formattedDate = targetDate.toLocaleDateString('uk-UA', { day: '2-digit', month: 'short' });
+      const rawDateStr = targetDate.toISOString().split('T')[0];
+
+      const data = {
+        type: item.type === 'income' ? 'income' : 'expense',
+        amount: numAmount,
+        category: item.category || 'Продукти',
+        mainCategoryId: item.mainCategoryId || 'food',
+        author: item.author || (globalUserFilter !== 'all' ? globalUserFilter : 'Андрій'),
+        note: item.note || '',
+        date: formattedDate,
+        rawDate: rawDateStr
+      };
+
+      const createdAt = baseNow + i;
+      const tempId = 'local_ai_' + createdAt;
+      setTransactions(prev => [{ id: tempId, ...data, createdAt }, ...prev]);
+      try {
+        await addDoc(collection(db, "transactions"), { ...data, createdAt });
+      } catch (e) {}
+    }
+  };
+
+
   const executeDelete = async () => {
     if (!itemToDelete) return;
     const idToRemove = itemToDelete;
@@ -457,6 +507,10 @@ export default function App() {
 
 
           <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenAIModal('voice')} style={[styles.btn3D, { backgroundColor: cardBg, borderColor, borderWidth: 1, flexDirection: 'row', width: 'auto', paddingHorizontal: 10, gap: 4 }]}>
+              <Ionicons name="sparkles" size={15} color={theme.primary} />
+              <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 11 }]}>ШІ</Text>
+            </TouchableOpacity>
             <TouchableOpacity activeOpacity={0.7} onPress={() => setHideBalance(!hideBalance)} style={[styles.btn3D, { backgroundColor: cardBg, borderColor, borderWidth: 1 }]}>
               <Ionicons name={hideBalance ? "eye-off" : "eye"} size={18} color={theme.text} />
             </TouchableOpacity>
@@ -469,7 +523,7 @@ export default function App() {
 
         <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ scale: scaleAnim }] }}>
           {currentScreen === 'main' && (
-            <CurrentMonthScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} showBudgetWidget={showBudgetWidget} plannedIncome={plannedIncome} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} budgetMode={budgetMode} handleOpenEditModal={handleOpenEditModal} promptDelete={(id) => {setItemToDelete(id); setDeleteModalVisible(true);}} onNavigate={navigateTo} />
+            <CurrentMonthScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} showBudgetWidget={showBudgetWidget} plannedIncome={plannedIncome} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} budgetMode={budgetMode} handleOpenEditModal={handleOpenEditModal} promptDelete={(id) => {setItemToDelete(id); setDeleteModalVisible(true);}} onNavigate={navigateTo} onOpenAI={handleOpenAIModal} />
           )}
           {currentScreen === 'analytics' && (
             <AnalyticsScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} showIcons={showIcons} globalUserFilter={globalUserFilter} onBack={() => navigateTo('main')} />
@@ -479,6 +533,27 @@ export default function App() {
           )}
         </Animated.View>
 
+
+        {/* Плаваючі кнопки швидкого доступу: Голос/Фото ШІ + Ручне додавання */}
+        <TouchableOpacity
+          activeOpacity={0.9}
+          style={[
+            styles.fab3D,
+            {
+              bottom: 90,
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+              right: 24,
+              backgroundColor: cardBg,
+              borderColor: theme.primary,
+              borderWidth: 1.5
+            }
+          ]}
+          onPress={() => handleOpenAIModal('voice')}
+        >
+          <Ionicons name="mic" size={22} color={theme.primary} />
+        </TouchableOpacity>
 
         <TouchableOpacity activeOpacity={0.9} style={[styles.fab3D, { backgroundColor: theme.primary }]} onPress={handleOpenAddModal}>
           <Ionicons name="add" size={28} color={theme.primaryText} />
@@ -496,7 +571,25 @@ export default function App() {
               </View>
               
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }}>
-                
+                {!editingId && (
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                    <TouchableOpacity
+                      style={[styles.premiumCard, { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: theme.primary + '18', borderColor: theme.primary + '44', borderWidth: 1, paddingVertical: 9 }]}
+                      onPress={() => { closeTransModal(); setTimeout(() => handleOpenAIModal('voice'), 250); }}
+                    >
+                      <Ionicons name="mic" size={15} color={theme.primary} />
+                      <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 12 }]}>Додати голосом</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.premiumCard, { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: theme.primary + '18', borderColor: theme.primary + '44', borderWidth: 1, paddingVertical: 9 }]}
+                      onPress={() => { closeTransModal(); setTimeout(() => handleOpenAIModal('photo'), 250); }}
+                    >
+                      <Ionicons name="camera" size={15} color={theme.primary} />
+                      <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 12 }]}>Сканувати чек</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
                 <View style={{ flexDirection: 'row', width: '100%', gap: 10, marginBottom: 16 }}>
                   <TouchableOpacity style={[styles.premiumCard, { flex: 1, alignItems: 'center', backgroundColor: transType === 'expense' ? expenseBtnColor : theme.chipInactive, borderColor, borderWidth: 1, paddingVertical: 10 }]} onPress={() => { LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); setTransType('expense'); setSelectedCategory(null); setSelectedCatItem(null); }}>
                     <Text style={[styles.fontJakartaBold, { color: transType === 'expense' ? (isLight ? '#FFF' : '#000') : theme.text, fontSize: 13 }]}>Витрата</Text>
@@ -639,6 +732,37 @@ export default function App() {
                 <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 18, marginBottom: 14 }]}>Налаштування</Text>
 
 
+                <TouchableOpacity activeOpacity={0.7} onPress={() => setAiSettingsCollapsed(!aiSettingsCollapsed)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: theme.border }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="sparkles" size={15} color={theme.primary} />
+                    <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 13 }]}>ШІ-Асистент (Голос та Фото чеків)</Text>
+                  </View>
+                  <Ionicons name={aiSettingsCollapsed ? "chevron-down" : "chevron-up"} size={16} color={theme.subText} />
+                </TouchableOpacity>
+                {!aiSettingsCollapsed && (
+                  <View style={{ marginTop: 10, marginBottom: 14 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <Text style={[styles.fontJakartaSemi, { color: theme.subText, fontSize: 11 }]}>Ключ Google Gemini API:</Text>
+                      <TouchableOpacity onPress={() => Linking.openURL('https://aistudio.google.com/app/apikey')}>
+                        <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 11 }]}>Отримати ключ ↗</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <TextInput
+                      placeholder="Вставте ключ AIzaSy..."
+                      placeholderTextColor={theme.subText}
+                      value={geminiApiKey}
+                      onChangeText={(val) => updateSettings({ geminiApiKey: val.trim() })}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={[styles.input3D, styles.fontJakartaSemi, { color: theme.text, backgroundColor: theme.inputBg, borderColor, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, fontSize: 12, marginBottom: 6 }]}
+                    />
+                    <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 10 }]}>
+                      Ключ автоматично синхронізується через Firebase між обома телефонами сім’ї.
+                    </Text>
+                  </View>
+                )}
+
+
                 <TouchableOpacity activeOpacity={0.7} onPress={() => setUiSettingsCollapsed(!uiSettingsCollapsed)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: theme.border }}>
                   <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 13 }]}>Інтерфейс</Text>
                   <Ionicons name={uiSettingsCollapsed ? "chevron-down" : "chevron-up"} size={16} color={theme.subText} />
@@ -748,6 +872,23 @@ export default function App() {
             </Animated.View>
           </KeyboardAvoidingView>
         )}
+
+
+        <AIAssistantModal
+          visible={showAIModal}
+          onClose={() => setShowAIModal(false)}
+          initialTab={aiInitialTab}
+          theme={theme}
+          isLight={isLight}
+          cardBg={cardBg}
+          borderColor={borderColor}
+          categories={categories}
+          incomeGroups={incomeGroups}
+          defaultAuthor={globalUserFilter !== 'all' ? globalUserFilter : 'Андрій'}
+          geminiApiKey={geminiApiKey}
+          onSaveApiKey={(key) => updateSettings({ geminiApiKey: key })}
+          onSaveTransactions={handleSaveAITransactions}
+        />
 
 
         <Modal visible={deleteModalVisible} animationType="fade" transparent={true} onRequestClose={() => setDeleteModalVisible(false)}>

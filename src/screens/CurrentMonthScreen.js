@@ -35,7 +35,8 @@ export default function CurrentMonthScreen({
   budgetMode = 'shared', 
   handleOpenEditModal, 
   promptDelete, 
-  onNavigate 
+  onNavigate,
+  onOpenAI
 }) {
   const now = new Date();
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -386,6 +387,98 @@ export default function CurrentMonthScreen({
           )}
           scrollEventThrottle={16}
         >
+          {/* ШІ-ВІДЖЕТ ШВИДКОГО ДОДАВАННЯ: ГОЛОС / ФОТО ЧЕКА / ТЕКСТ */}
+          <View
+            style={[
+              styles.premiumCard,
+              {
+                backgroundColor: cardBg,
+                borderColor,
+                borderWidth: 1,
+                padding: 12,
+                marginBottom: 14
+              }
+            ]}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="sparkles" size={14} color={theme.primary} />
+                <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 12 }]}>
+                  ШІ-додавання витрат
+                </Text>
+              </View>
+              <Text style={[styles.fontJakartaSemi, { color: theme.subText, fontSize: 10 }]}>
+                Голос • Чек • Текст
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => onOpenAI && onOpenAI('voice')}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 14,
+                  backgroundColor: theme.primary
+                }}
+              >
+                <Ionicons name="mic" size={16} color={theme.primaryText} />
+                <Text style={[styles.fontJakartaBold, { color: theme.primaryText, fontSize: 12 }]}>
+                  Голосом
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => onOpenAI && onOpenAI('photo')}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 14,
+                  backgroundColor: theme.inputBg,
+                  borderColor,
+                  borderWidth: 1
+                }}
+              >
+                <Ionicons name="camera-outline" size={16} color={theme.primary} />
+                <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 12 }]}>
+                  По фото
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => onOpenAI && onOpenAI('text')}
+                style={{
+                  paddingHorizontal: 12,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 4,
+                  paddingVertical: 10,
+                  borderRadius: 14,
+                  backgroundColor: theme.inputBg,
+                  borderColor,
+                  borderWidth: 1
+                }}
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={15} color={theme.primary} />
+                <Text style={[styles.fontJakartaSemi, { color: theme.text, fontSize: 11 }]}>
+                  Текст
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, marginLeft: 4 }}>
             <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 14 }]}>
               Останні операції
