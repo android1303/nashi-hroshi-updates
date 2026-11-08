@@ -58,8 +58,8 @@ export default function App() {
   const [catSettingsTab, setCatSettingsTab] = useState('expense');
 
 
-  const [categories, setCategories] = useState([]);
-  const [incomeGroups, setIncomeGroups] = useState([]);
+  const [categories, setCategories] = useState(initialCategories);
+  const [incomeGroups, setIncomeGroups] = useState(initialIncomeGroups);
   const [newSubCatInputs, setNewSubCatInputs] = useState({});
   const [budgetMode, setBudgetMode] = useState('shared');
   const [plannedIncome, setPlannedIncome] = useState(0);
@@ -230,6 +230,7 @@ export default function App() {
 
 
   useEffect(() => {
+    const timer = setTimeout(() => setLoading(false), 2500);
     const unsubCat = onSnapshot(doc(db, "settings", "categories"), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -258,8 +259,11 @@ export default function App() {
       } else {
         setCategories(initialCategories); setIncomeGroups(initialIncomeGroups);
       }
+    }, () => {
+      setCategories(initialCategories);
+      setIncomeGroups(initialIncomeGroups);
     });
-    return () => unsubCat();
+    return () => { clearTimeout(timer); unsubCat(); };
   }, []);
 
 
@@ -274,17 +278,29 @@ export default function App() {
 
 
   const updateSettings = async (updates) => {
+    if (updates.plannedIncome !== undefined) setPlannedIncome(updates.plannedIncome);
+    if (updates.showBudgetWidget !== undefined) setShowBudgetWidget(updates.showBudgetWidget);
+    if (updates.hideBalanceDefault !== undefined) setHideBalanceDefault(updates.hideBalanceDefault);
+    if (updates.biometricsEnabled !== undefined) setBiometricsEnabled(updates.biometricsEnabled);
+    if (updates.budgetMode !== undefined) setBudgetMode(updates.budgetMode);
+    if (updates.categoryLimits) setCategoryLimits(updates.categoryLimits);
+    if (updates.personalCategoryLimits) setPersonalCategoryLimits(updates.personalCategoryLimits);
+    if (updates.categories) setCategories(updates.categories);
+    if (updates.incomeGroups) setIncomeGroups(updates.incomeGroups);
     try {
       await setDoc(doc(db, "settings", "categories"), updates, { merge: true });
-      if (updates.plannedIncome !== undefined) setPlannedIncome(updates.plannedIncome);
-      if (updates.showBudgetWidget !== undefined) setShowBudgetWidget(updates.showBudgetWidget);
-      if (updates.hideBalanceDefault !== undefined) setHideBalanceDefault(updates.hideBalanceDefault);
-      if (updates.biometricsEnabled !== undefined) setBiometricsEnabled(updates.biometricsEnabled);
-      if (updates.categoryLimits) setCategoryLimits(updates.categoryLimits);
-      if (updates.personalCategoryLimits) setPersonalCategoryLimits(updates.personalCategoryLimits);
-      if (updates.categories) setCategories(updates.categories);
-      if (updates.incomeGroups) setIncomeGroups(updates.incomeGroups);
     } catch (e) {}
+  };
+
+
+  const toggleCategoryVisibility = (catId, type) => {
+    if (type === 'expense') {
+      const updated = categories.map(c => c.id === catId ? { ...c, isHidden: !c.isHidden } : c);
+      updateSettings({ categories: updated });
+    } else {
+      const updated = incomeGroups.map(g => g.id === catId ? { ...g, isHidden: !g.isHidden } : g);
+      updateSettings({ incomeGroups: updated });
+    }
   };
 
 
@@ -394,16 +410,26 @@ export default function App() {
 
 
     const data = { type: transType, amount: numAmount, category: selectedCatItem, mainCategoryId: currentMainCatId, author, note: autoNote, date: formattedDate, rawDate: rawDateStr };
-    if (editingId) { await updateDoc(doc(db, "transactions", editingId), data); } 
-    else { await addDoc(collection(db, "transactions"), { ...data, createdAt: Date.now() }); }
+    try {
+      if (editingId) {
+        setTransactions(prev => prev.map(t => t.id === editingId ? { ...t, ...data } : t));
+        await updateDoc(doc(db, "transactions", editingId), data);
+      } else {
+        const tempId = 'local_' + Date.now();
+        setTransactions(prev => [{ id: tempId, ...data, createdAt: Date.now() }, ...prev]);
+        await addDoc(collection(db, "transactions"), { ...data, createdAt: Date.now() });
+      }
+    } catch (e) {}
     closeTransModal();
   };
 
 
   const executeDelete = async () => {
     if (!itemToDelete) return;
-    try { await deleteDoc(doc(db, "transactions", itemToDelete)); } catch (e) {}
+    const idToRemove = itemToDelete;
+    setTransactions(prev => prev.filter(t => t.id !== idToRemove));
     setDeleteModalVisible(false); setItemToDelete(null);
+    try { await deleteDoc(doc(db, "transactions", idToRemove)); } catch (e) {}
   };
 
 
@@ -746,9 +772,9 @@ export default function App() {
 
 
 const styles = StyleSheet.create({
-  fontJakarta: { fontFamily: 'JakartaSans' },
-  fontJakartaSemi: { fontFamily: 'JakartaSans-SemiBold' },
-  fontJakartaBold: { fontFamily: 'JakartaSans-Bold' },
+  fontJakarta: { fontWeight: '400' },
+  fontJakartaSemi: { fontWeight: '600' },
+  fontJakartaBold: { fontWeight: '700' },
   container: { flex: 1 },
   centerContent: { justifyContent: 'center', alignItems: 'center' },
   

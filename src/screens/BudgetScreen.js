@@ -278,9 +278,9 @@ export default function BudgetScreen({
 }
 
 const styles = StyleSheet.create({
-  fontJakarta: { fontFamily: 'JakartaSans' },
-  fontJakartaSemi: { fontFamily: 'JakartaSans-SemiBold' },
-  fontJakartaBold: { fontFamily: 'JakartaSans-Bold' },
+  fontJakarta: { fontWeight: '400' },
+  fontJakartaSemi: { fontWeight: '600' },
+  fontJakartaBold: { fontWeight: '700' },
   card: { borderRadius: 16 },
   backBtn: { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   modeChip: { paddingVertical: 8, alignItems: 'center', borderRadius: 10 },

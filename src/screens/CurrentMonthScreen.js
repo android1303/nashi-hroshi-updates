@@ -472,9 +472,9 @@ export default function CurrentMonthScreen({
 }
 
 const styles = StyleSheet.create({
-  fontJakarta: { fontFamily: 'JakartaSans' },
-  fontJakartaSemi: { fontFamily: 'JakartaSans-SemiBold' },
-  fontJakartaBold: { fontFamily: 'JakartaSans-Bold' },
+  fontJakarta: { fontWeight: '400' },
+  fontJakartaSemi: { fontWeight: '600' },
+  fontJakartaBold: { fontWeight: '700' },
   premiumCard: { 
     borderRadius: 20, 
     shadowColor: '#000', 

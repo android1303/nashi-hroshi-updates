@@ -97,8 +97,8 @@ export default function AnalyticsScreen({
 }
 
 const styles = StyleSheet.create({
-  fontJakarta: { fontFamily: 'JakartaSans' },
-  fontJakartaBold: { fontFamily: 'JakartaSans-Bold' },
+  fontJakarta: { fontWeight: '400' },
+  fontJakartaBold: { fontWeight: '700' },
   card: { borderRadius: 16, borderWidth: 1 },
   backBtn: { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
 });
