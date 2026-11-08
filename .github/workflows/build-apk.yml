@@ -34,7 +34,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Install NPM Dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Generate Native Android Project (Expo Prebuild)
         run: npx expo prebuild --platform android --clean --no-install
