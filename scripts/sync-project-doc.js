@@ -23,7 +23,11 @@ const FILES_TO_INCLUDE = [
   { relPath: 'src/screens/AnalyticsScreen.js', lang: 'javascript', title: '10. Екран річної аналітики та ШІ-Аналітика (src/screens/AnalyticsScreen.js)' },
   { relPath: 'src/screens/BudgetScreen.js', lang: 'javascript', title: '11. Екран планування бюджету (src/screens/BudgetScreen.js)' },
   { relPath: 'App.js', lang: 'javascript', title: '12. Головний файл додатку (App.js)' },
-  { relPath: 'plugins/withAndroidAIWidget.js', lang: 'javascript', title: '13. Нативний віджет для робочого столу Android (plugins/withAndroidAIWidget.js)' }
+  { relPath: 'plugins/withAndroidAIWidget.js', lang: 'javascript', title: '13. Нативний віджет для робочого столу Android (plugins/withAndroidAIWidget.js)' },
+  { relPath: 'plugins/withNotificationListener.js', lang: 'javascript', title: '14. Нативний сервіс перехоплення сповіщень Google Wallet та банків (plugins/withNotificationListener.js)' },
+  { relPath: 'src/services/walletListener.js', lang: 'javascript', title: '15. Клієнтський сервіс взаємодії з буфером Google Wallet (src/services/walletListener.js)' },
+  { relPath: 'src/components/PendingTransactionsModal.js', lang: 'javascript', title: '16. Модальне вікно підтвердження оплат Google Wallet (src/components/PendingTransactionsModal.js)' },
+  { relPath: 'src/components/FamilyInviteModal.js', lang: 'javascript', title: '17. Модальне вікно управління сім\'єю та запрошення (src/components/FamilyInviteModal.js)' }
 ];
 
 function generateFullProjectDoc() {

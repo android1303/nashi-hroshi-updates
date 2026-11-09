@@ -3,7 +3,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -27,7 +27,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 8,
+      "versionCode": 9,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -58,7 +58,8 @@
           "cameraPermission": "Дозволити доступ до камери для фотографування чеків"
         }
       ],
-      "./plugins/withAndroidAIWidget"
+      "./plugins/withAndroidAIWidget",
+      "./plugins/withNotificationListener"
     ]
   }
 }

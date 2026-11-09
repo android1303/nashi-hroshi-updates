@@ -12,16 +12,25 @@ let LocalAuthentication = null;
 try { LocalAuthentication = require('expo-local-authentication'); } catch (e) {}
 
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { collection, onSnapshot, addDoc, doc, deleteDoc, query, orderBy, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from './src/services/firebase';
 import { themes } from './src/theme/theme';
 import { initialCategories, initialIncomeGroups, monthNames } from './src/constants';
 
-
 import CurrentMonthScreen from './src/screens/CurrentMonthScreen';
 import BudgetScreen from './src/screens/BudgetScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import AIAssistantModal from './src/components/AIAssistantModal';
+import PendingTransactionsModal from './src/components/PendingTransactionsModal';
+import FamilyInviteModal from './src/components/FamilyInviteModal';
+import {
+  getPendingWalletPayments,
+  removePendingPayment,
+  clearAllPendingPayments,
+  addTestPayment,
+  openNotificationSettings
+} from './src/services/walletListener';
 
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -58,9 +67,18 @@ export default function App() {
   const [categoriesSettingsCollapsed, setCategoriesSettingsCollapsed] = useState(true);
   const [aiSettingsCollapsed, setAiSettingsCollapsed] = useState(false);
   const [catSettingsTab, setCatSettingsTab] = useState('expense');
-  const [geminiApiKey, setGeminiApiKey] = useState('');
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiInitialTab, setAiInitialTab] = useState('voice');
+
+  // Стан непідтверджених оплат Google Wallet та Банків
+  const [pendingWalletList, setPendingWalletList] = useState([]);
+  const [showPendingWalletModal, setShowPendingWalletModal] = useState(false);
+  const [walletSettingsCollapsed, setWalletSettingsCollapsed] = useState(false);
+
+  // Стан сім'ї та профілю поточного пристрою
+  const [familyMembers, setFamilyMembers] = useState(['Андрій', 'Людмила']);
+  const [currentDeviceUser, setCurrentDeviceUser] = useState('Андрій');
+  const [showFamilyModal, setShowFamilyModal] = useState(false);
 
 
   const [categories, setCategories] = useState(initialCategories);
@@ -163,6 +181,8 @@ export default function App() {
 
   useEffect(() => {
     const onBackPress = () => {
+      if (showFamilyModal) { setShowFamilyModal(false); return true; }
+      if (showPendingWalletModal) { setShowPendingWalletModal(false); return true; }
       if (showAIModal) { setShowAIModal(false); return true; }
       if (showTransModal) { closeTransModal(); return true; }
       if (showSettModal) { closeSettModal(); return true; }
@@ -171,10 +191,10 @@ export default function App() {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => backHandler.remove();
-  }, [showAIModal, showTransModal, showSettModal, currentScreen]);
+  }, [showFamilyModal, showPendingWalletModal, showAIModal, showTransModal, showSettModal, currentScreen]);
 
 
-  // Обробка натискань із віджета на робочому столі телефону (nashihroshi://ai?mode=voice|photo|text або nashihroshi://add)
+  // Обробка натискань із віджета або сповіщень Google Wallet (nashihroshi://ai... або nashihroshi://pending)
   useEffect(() => {
     const handleWidgetUrl = (url) => {
       if (!url || typeof url !== 'string') return;
@@ -186,6 +206,9 @@ export default function App() {
         setShowAIModal(true);
       } else if (url.includes('nashihroshi://add')) {
         handleOpenAddModal();
+      } else if (url.includes('nashihroshi://pending') || url.includes('nashihroshi://wallet')) {
+        refreshPendingWalletPayments();
+        setShowPendingWalletModal(true);
       }
     };
 
@@ -220,12 +243,121 @@ export default function App() {
   const [transDateOption, setTransDateOption] = useState('today');
   const [customDate, setCustomDate] = useState('');
 
+  // Завантажуємо збереженого користувача для цього пристрою
+  useEffect(() => {
+    AsyncStorage.getItem('@nashi_hroshi_current_user').then(saved => {
+      if (saved) {
+        setCurrentDeviceUser(saved);
+        setAuthor(saved);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleSelectDeviceUser = async (user) => {
+    setCurrentDeviceUser(user);
+    setAuthor(user);
+    try {
+      await AsyncStorage.setItem('@nashi_hroshi_current_user', user);
+    } catch (e) {}
+  };
+
+  const handleAddFamilyMember = async (name) => {
+    const updated = Array.from(new Set([...familyMembers, name]));
+    setFamilyMembers(updated);
+    await updateSettings({ familyMembers: updated });
+  };
+
+  const handleRemoveFamilyMember = async (name) => {
+    const updated = familyMembers.filter(m => m !== name);
+    setFamilyMembers(updated);
+    await updateSettings({ familyMembers: updated });
+  };
+
+  // Читання непідтверджених оплат Google Wallet
+  const refreshPendingWalletPayments = async () => {
+    try {
+      const list = await getPendingWalletPayments();
+      setPendingWalletList(list);
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    refreshPendingWalletPayments();
+    const interval = setInterval(refreshPendingWalletPayments, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleConfirmWalletPayment = async (item, chosenCategory) => {
+    const today = new Date().toISOString().split('T')[0];
+    const newTrans = {
+      type: 'expense',
+      amount: Number(item.amount) || 0,
+      mainCategoryId: 'food',
+      category: chosenCategory || item.suggestedCategory || 'Продукти',
+      note: item.merchant || 'Google Wallet',
+      author: currentDeviceUser,
+      rawDate: today,
+      date: today,
+      createdAt: Date.now()
+    };
+    try {
+      await addDoc(collection(db, "transactions"), newTrans);
+      const updated = await removePendingPayment(item.id);
+      setPendingWalletList(updated);
+      if (updated.length === 0) {
+        setShowPendingWalletModal(false);
+      }
+    } catch (e) {}
+  };
+
+  const handleRejectWalletPayment = async (itemId) => {
+    try {
+      const updated = await removePendingPayment(itemId);
+      setPendingWalletList(updated);
+      if (updated.length === 0) {
+        setShowPendingWalletModal(false);
+      }
+    } catch (e) {}
+  };
+
+  const handleConfirmAllWalletPayments = async (categoryMap = {}) => {
+    const today = new Date().toISOString().split('T')[0];
+    for (const item of pendingWalletList) {
+      const chosenCat = categoryMap[item.id] || item.suggestedCategory || 'Продукти';
+      const newTrans = {
+        type: 'expense',
+        amount: Number(item.amount) || 0,
+        mainCategoryId: 'food',
+        category: chosenCat,
+        note: item.merchant || 'Google Wallet',
+        author: currentDeviceUser,
+        rawDate: today,
+        date: today,
+        createdAt: Date.now()
+      };
+      try {
+        await addDoc(collection(db, "transactions"), newTrans);
+      } catch (e) {}
+    }
+    await clearAllPendingPayments();
+    setPendingWalletList([]);
+    setShowPendingWalletModal(false);
+  };
+
+  const handleAddTestWalletPayment = async () => {
+    const updated = await addTestPayment({
+      amount: 185.50,
+      merchant: 'Сільпо',
+      category: 'Продукти'
+    });
+    setPendingWalletList(updated);
+  };
 
   const availableUsers = useMemo(() => {
-    const set = new Set(['Андрій', 'Людмила']);
+    const set = new Set(familyMembers);
     transactions.forEach(t => { if (t.author) set.add(t.author); });
     return Array.from(set);
-  }, [transactions]);
+  }, [familyMembers, transactions]);
 
 
   const handleCycleUserFilter = () => {
@@ -291,6 +423,7 @@ export default function App() {
         if (data.biometricsEnabled !== undefined) setBiometricsEnabled(data.biometricsEnabled);
         if (data.showBudgetWidget !== undefined) setShowBudgetWidget(data.showBudgetWidget);
         if (data.geminiApiKey !== undefined) setGeminiApiKey(data.geminiApiKey);
+        if (Array.isArray(data.familyMembers) && data.familyMembers.length > 0) setFamilyMembers(data.familyMembers);
       } else {
         setCategories(initialCategories); setIncomeGroups(initialIncomeGroups);
       }
@@ -323,6 +456,7 @@ export default function App() {
     if (updates.categories) setCategories(updates.categories);
     if (updates.incomeGroups) setIncomeGroups(updates.incomeGroups);
     if (updates.geminiApiKey !== undefined) setGeminiApiKey(updates.geminiApiKey);
+    if (updates.familyMembers) setFamilyMembers(updates.familyMembers);
     try {
       await setDoc(doc(db, "settings", "categories"), updates, { merge: true });
     } catch (e) {}
@@ -528,13 +662,25 @@ export default function App() {
 
 
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, paddingHorizontal: 16, paddingTop: 6 }}>
-          <TouchableOpacity activeOpacity={0.7} onPress={handleCycleUserFilter} style={[styles.premiumCard, { backgroundColor: cardBg, borderColor, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12 }]}>
-            <Ionicons name="person-circle-outline" size={16} color={theme.primary} />
-            <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 13 }]}>{globalUserFilter === 'all' ? 'Усі' : globalUserFilter}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+            <TouchableOpacity activeOpacity={0.7} onPress={handleCycleUserFilter} style={[styles.premiumCard, { backgroundColor: cardBg, borderColor, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12 }]}>
+              <Ionicons name="person-circle-outline" size={16} color={theme.primary} />
+              <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 13 }]}>{globalUserFilter === 'all' ? 'Усі' : globalUserFilter}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity activeOpacity={0.7} onPress={() => setShowFamilyModal(true)} style={[styles.btn3D, { backgroundColor: cardBg, borderColor, borderWidth: 1 }]} title="Сім'я та запрошення">
+              <Ionicons name="people" size={17} color={theme.primary} />
+            </TouchableOpacity>
+          </View>
 
 
           <View style={{ flexDirection: 'row', gap: 8 }}>
+            {pendingWalletList.length > 0 && (
+              <TouchableOpacity activeOpacity={0.7} onPress={() => setShowPendingWalletModal(true)} style={[styles.btn3D, { backgroundColor: theme.primary, borderColor: theme.primary, borderWidth: 1, flexDirection: 'row', width: 'auto', paddingHorizontal: 10, gap: 4 }]}>
+                <Text style={{ fontSize: 13 }}>⚡</Text>
+                <Text style={[styles.fontJakartaBold, { color: theme.primaryText, fontSize: 12 }]}>{pendingWalletList.length}</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenAIModal('voice')} style={[styles.btn3D, { backgroundColor: cardBg, borderColor, borderWidth: 1, flexDirection: 'row', width: 'auto', paddingHorizontal: 10, gap: 4 }]}>
               <Ionicons name="sparkles" size={15} color={theme.primary} />
               <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 11 }]}>ШІ</Text>
@@ -547,6 +693,44 @@ export default function App() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Банер непідтверджених оплат Google Wallet / Банків */}
+        {pendingWalletList.length > 0 && (
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => setShowPendingWalletModal(true)}
+            style={{
+              marginHorizontal: 16,
+              marginBottom: 10,
+              paddingVertical: 10,
+              paddingHorizontal: 14,
+              borderRadius: 16,
+              backgroundColor: theme.primary + '18',
+              borderColor: theme.primary + '44',
+              borderWidth: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+              <Text style={{ fontSize: 18 }}>⚡</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 12 }]}>
+                  Оплати Google Wallet на підтвердження ({pendingWalletList.length})
+                </Text>
+                <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 11 }]} numberOfLines={1}>
+                  {pendingWalletList[0].merchant} • -{pendingWalletList[0].amount} ₴ • Натисніть для підтвердження
+                </Text>
+              </View>
+            </View>
+            <View style={{ backgroundColor: theme.primary, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 }}>
+              <Text style={[styles.fontJakartaBold, { color: theme.primaryText, fontSize: 11 }]}>
+                Огляд
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
 
 
         <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ scale: scaleAnim }] }}>
@@ -834,6 +1018,77 @@ export default function App() {
                 )}
 
 
+                {/* Секція: Оплати Google Wallet та Банків */}
+                <TouchableOpacity activeOpacity={0.7} onPress={() => setWalletSettingsCollapsed(!walletSettingsCollapsed)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: theme.border }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 15 }}>⚡</Text>
+                    <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 13 }]}>Оплати Google Wallet та Банків</Text>
+                  </View>
+                  <Ionicons name={walletSettingsCollapsed ? "chevron-down" : "chevron-up"} size={16} color={theme.subText} />
+                </TouchableOpacity>
+                {!walletSettingsCollapsed && (
+                  <View style={{ marginTop: 10, marginBottom: 14 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#4CAF50' }} />
+                      <Text style={[styles.fontJakartaSemi, { color: theme.text, fontSize: 12 }]}>
+                        Автоматичне зчитування оплат активне
+                      </Text>
+                    </View>
+                    <Text style={[styles.fontJakarta, { color: theme.subText, fontSize: 11, marginBottom: 12, lineHeight: 16 }]}>
+                      Слухач перехоплює суми та магазини з пушів Google Wallet, Monobank, Приват24 тощо і додає в чергу на підтвердження для {currentDeviceUser}.
+                    </Text>
+
+                    <TouchableOpacity
+                      onPress={openNotificationSettings}
+                      style={[styles.premiumCard, { backgroundColor: cardBg, borderColor, borderWidth: 1, paddingVertical: 10, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }]}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Ionicons name="notifications-outline" size={16} color={theme.primary} />
+                        <Text style={[styles.fontJakartaSemi, { color: theme.text, fontSize: 12 }]}>
+                          Системний дозвіл сповіщень Android
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={14} color={theme.subText} />
+                    </TouchableOpacity>
+
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        onPress={handleAddTestWalletPayment}
+                        style={[styles.premiumCard, { flex: 1, backgroundColor: theme.primary + '18', borderColor: theme.primary, borderWidth: 1, paddingVertical: 9, alignItems: 'center' }]}
+                      >
+                        <Text style={[styles.fontJakartaBold, { color: theme.primary, fontSize: 11 }]}>
+                          + Тестовий платіж (185 ₴)
+                        </Text>
+                      </TouchableOpacity>
+
+                      {pendingWalletList.length > 0 && (
+                        <TouchableOpacity
+                          onPress={() => { closeSettModal(); setShowPendingWalletModal(true); }}
+                          style={[styles.premiumCard, { flex: 1, backgroundColor: theme.primary, paddingVertical: 9, alignItems: 'center' }]}
+                        >
+                          <Text style={[styles.fontJakartaBold, { color: theme.primaryText, fontSize: 11 }]}>
+                            Огляд черги ({pendingWalletList.length})
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+
+                {/* Секція: Сім'я та Користувачі */}
+                <TouchableOpacity activeOpacity={0.7} onPress={() => { closeSettModal(); setShowFamilyModal(true); }} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: theme.border }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 15 }}>👨‍👩‍👧‍👦</Text>
+                    <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 13 }]}>Сім'я та Користувачі ({familyMembers.length})</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[styles.fontJakartaSemi, { color: theme.primary, fontSize: 12 }]}>{currentDeviceUser}</Text>
+                    <Ionicons name="chevron-forward" size={16} color={theme.subText} />
+                  </View>
+                </TouchableOpacity>
+
+
                 <TouchableOpacity activeOpacity={0.7} onPress={() => setCategoriesSettingsCollapsed(!categoriesSettingsCollapsed)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: theme.border }}>
                   <Text style={[styles.fontJakartaBold, { color: theme.text, fontSize: 13 }]}>Управління категоріями</Text>
                   <Ionicons name={categoriesSettingsCollapsed ? "chevron-down" : "chevron-up"} size={16} color={theme.subText} />
@@ -916,6 +1171,37 @@ export default function App() {
           geminiApiKey={geminiApiKey}
           onSaveApiKey={(key) => updateSettings({ geminiApiKey: key })}
           onSaveTransactions={handleSaveAITransactions}
+        />
+
+        <PendingTransactionsModal
+          visible={showPendingWalletModal}
+          onClose={() => setShowPendingWalletModal(false)}
+          theme={theme}
+          isLight={isLight}
+          cardBg={cardBg}
+          borderColor={borderColor}
+          pendingList={pendingWalletList}
+          categories={categories}
+          currentDeviceUser={currentDeviceUser}
+          onConfirmPayment={handleConfirmWalletPayment}
+          onRejectPayment={handleRejectWalletPayment}
+          onConfirmAll={handleConfirmAllWalletPayments}
+          onAddTestPayment={handleAddTestWalletPayment}
+          onOpenSettings={openNotificationSettings}
+        />
+
+        <FamilyInviteModal
+          visible={showFamilyModal}
+          onClose={() => setShowFamilyModal(false)}
+          theme={theme}
+          isLight={isLight}
+          cardBg={cardBg}
+          borderColor={borderColor}
+          familyMembers={familyMembers}
+          currentDeviceUser={currentDeviceUser}
+          onSelectDeviceUser={handleSelectDeviceUser}
+          onAddFamilyMember={handleAddFamilyMember}
+          onRemoveFamilyMember={handleRemoveFamilyMember}
         />
 
 
