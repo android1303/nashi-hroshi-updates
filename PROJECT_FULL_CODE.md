@@ -1,4 +1,4 @@
-# Повний код проєкту «Наші Гроші» (v1.0.9)
+# Повний код проєкту «Наші Гроші» (v1.1.0)
 
 > Автоматично згенеровано: 2026-11-09 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -54,7 +54,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.0.9",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -78,7 +78,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 9,
+      "versionCode": 10,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -4044,6 +4044,7 @@ export default function App() {
   const [categoriesSettingsCollapsed, setCategoriesSettingsCollapsed] = useState(true);
   const [aiSettingsCollapsed, setAiSettingsCollapsed] = useState(false);
   const [catSettingsTab, setCatSettingsTab] = useState('expense');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiInitialTab, setAiInitialTab] = useState('voice');
 

@@ -67,6 +67,7 @@ export default function App() {
   const [categoriesSettingsCollapsed, setCategoriesSettingsCollapsed] = useState(true);
   const [aiSettingsCollapsed, setAiSettingsCollapsed] = useState(false);
   const [catSettingsTab, setCatSettingsTab] = useState('expense');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiInitialTab, setAiInitialTab] = useState('voice');
 
