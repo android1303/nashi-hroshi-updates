@@ -118,6 +118,46 @@ export default function AIAssistantModal({
     }
   }, [isRecording]);
 
+  const VOICE_RECORDING_OPTIONS = {
+    isMeteringEnabled: true,
+    android: {
+      extension: '.m4a',
+      outputFormat: 2, // MPEG_4
+      audioEncoder: 3, // AAC
+      sampleRate: 44100,
+      numberOfChannels: 1, // Моно: вдвічі менший розмір, швидка передача
+      bitRate: 64000
+    },
+    ios: {
+      extension: '.m4a',
+      outputFormat: 'aac ',
+      audioQuality: 0x60, // HIGH
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 64000,
+      linearPCMBitDepth: 16,
+      linearPCMIsBigEndian: false,
+      linearPCMIsFloat: false
+    },
+    web: {
+      mimeType: 'audio/webm',
+      bitsPerSecond: 64000
+    }
+  };
+
+  const resetAudioMode = async () => {
+    if (!Audio) return;
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false
+      });
+    } catch (e) {}
+  };
+
   const stopAndCleanupRecording = async () => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -125,12 +165,14 @@ export default function AIAssistantModal({
     }
     setIsRecording(false);
     setRecordingSeconds(0);
-    if (recordingRef.current) {
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (rec) {
       try {
-        await recordingRef.current.stopAndUnloadAsync();
+        await rec.stopAndUnloadAsync();
       } catch (e) {}
-      recordingRef.current = null;
     }
+    await resetAudioMode();
   };
 
   const startVoiceRecording = async () => {
@@ -145,6 +187,9 @@ export default function AIAssistantModal({
       return;
     }
 
+    // Завжди очищаємо попередній запис перед створенням нового
+    await stopAndCleanupRecording();
+
     try {
       const perm = await Audio.requestPermissionsAsync();
       if (perm.status !== 'granted') {
@@ -154,12 +199,15 @@ export default function AIAssistantModal({
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
-        playsInSilentModeIOS: true
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false
       });
 
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
+      await recording.startAsync();
 
       recordingRef.current = recording;
       setIsRecording(true);
@@ -168,41 +216,54 @@ export default function AIAssistantModal({
         setRecordingSeconds(prev => prev + 1);
       }, 1000);
     } catch (err) {
+      await stopAndCleanupRecording();
       setErrorMsg('Не вдалося почати запис голосу: ' + (err.message || ''));
     }
   };
 
   const finishVoiceRecordingAndAnalyze = async () => {
-    if (!recordingRef.current) return;
+    const rec = recordingRef.current;
+    if (!rec) return;
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
     setIsRecording(false);
+    recordingRef.current = null;
+
+    let uri = null;
+    try {
+      await rec.stopAndUnloadAsync();
+      uri = rec.getURI();
+    } catch (err) {
+      setErrorMsg('Не вдалося зупинити запис: ' + (err.message || ''));
+    } finally {
+      await resetAudioMode();
+    }
+
+    if (!uri) return;
+
+    setIsAnalyzing(true);
+    setErrorMsg('');
 
     try {
-      const rec = recordingRef.current;
-      recordingRef.current = null;
-      await rec.stopAndUnloadAsync();
-      const uri = rec.getURI();
-
-      if (!uri || !FileSystem) {
-        setErrorMsg('Не вдалося отримати аудіофайл запису.');
-        return;
+      if (!FileSystem) {
+        throw new Error('Модуль читання файлів недоступний.');
       }
-
-      setIsAnalyzing(true);
-      setErrorMsg('');
-
       const base64Audio = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64
       });
+
+      if (!base64Audio || base64Audio.length < 50) {
+        throw new Error('Запис порожній або занадто короткий. Скажіть витрату чіткіше.');
+      }
 
       const result = await analyzeTransactionsWithAI({
         apiKey: effectiveApiKey,
         mode: 'voice',
         audioBase64: base64Audio,
-        audioMimeType: Platform.OS === 'ios' ? 'audio/mp4' : 'audio/mp4',
+        audioMimeType: 'audio/mp4',
         categories,
         incomeGroups,
         defaultAuthor
@@ -247,10 +308,12 @@ export default function AIAssistantModal({
         }
       }
 
+      // quality: 0.35 стискає фото до ~150-300 КБ, що усуває OOM/зависання
+      // та передає чек у Gemini з бездоганною чіткістю
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: false,
-        quality: 0.7,
+        quality: 0.35,
         base64: true
       };
 
@@ -268,7 +331,22 @@ export default function AIAssistantModal({
         });
       }
 
-      const mimeType = asset.mimeType || 'image/jpeg';
+      if (!base64Data) {
+        setErrorMsg('Не вдалося отримати дані зображення.');
+        return;
+      }
+
+      let mimeType = 'image/jpeg';
+      if (asset.mimeType && asset.mimeType.includes('/')) {
+        mimeType = asset.mimeType.toLowerCase();
+      } else if (asset.uri) {
+        const u = asset.uri.toLowerCase();
+        if (u.endsWith('.png')) mimeType = 'image/png';
+        else if (u.endsWith('.webp')) mimeType = 'image/webp';
+        else mimeType = 'image/jpeg';
+      }
+      if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
+
       setSelectedImageUri(asset.uri);
       setSelectedImageBase64(base64Data);
       setSelectedImageMime(mimeType);
@@ -277,6 +355,7 @@ export default function AIAssistantModal({
       await runPhotoAnalysis(base64Data, mimeType, receiptSplitMode);
     } catch (err) {
       setErrorMsg('Помилка завантаження фото: ' + (err.message || ''));
+      setIsAnalyzing(false);
     }
   };
 
@@ -291,7 +370,6 @@ export default function AIAssistantModal({
         receiptSplitMode: splitMode,
         imageBase64: base64Data,
         imageMimeType: mimeType || 'image/jpeg',
-        textInput,
         categories,
         incomeGroups,
         defaultAuthor
@@ -563,6 +641,7 @@ export default function AIAssistantModal({
 
                 <View style={{ justifyContent: 'center', alignItems: 'center', marginVertical: 8 }}>
                   <Animated.View
+                    pointerEvents="none"
                     style={{
                       position: 'absolute',
                       width: 96,
@@ -586,11 +665,15 @@ export default function AIAssistantModal({
                       elevation: 6
                     }}
                   >
-                    <Ionicons
-                      name={isRecording ? 'stop' : 'mic'}
-                      size={34}
-                      color={isRecording ? '#FFF' : theme.primaryText}
-                    />
+                    {isAnalyzing ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Ionicons
+                        name={isRecording ? 'stop' : 'mic'}
+                        size={34}
+                        color={isRecording ? '#FFF' : theme.primaryText}
+                      />
+                    )}
                   </TouchableOpacity>
                 </View>
 

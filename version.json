@@ -1,5 +1,5 @@
 {
-  "version": "1.0.7",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.7/app-release.apk",
-  "releaseNotes": "v1.0.7: Додано нативний віджет для робочого столу Android («Наші Гроші — ШІ Віджет» з кнопками Голосом / По фото / Текст) та інтерактивний ШІ-Аналітик в екран Аналітики."
+  "version": "1.0.8",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.0.8/app-release.apk",
+  "releaseNotes": "v1.0.8: Виправлено життєвий цикл запису аудіо (expo-av) для безвідмовного багаторазового голосового вводу, оптимізовано розмір фото чеків для запобігання переповнення пам'яті (OOM) та оновлено інтеграцію з Google Gemini Multimodal API."
 }

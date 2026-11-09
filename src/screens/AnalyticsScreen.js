@@ -135,8 +135,66 @@ export default function AnalyticsScreen({
     return `${num.toLocaleString('uk-UA')} ₴`;
   };
 
+  const VOICE_RECORDING_OPTIONS = {
+    isMeteringEnabled: true,
+    android: {
+      extension: '.m4a',
+      outputFormat: 2, // MPEG_4
+      audioEncoder: 3, // AAC
+      sampleRate: 44100,
+      numberOfChannels: 1, // Моно: менший розмір, швидка передача
+      bitRate: 64000
+    },
+    ios: {
+      extension: '.m4a',
+      outputFormat: 'aac ',
+      audioQuality: 0x60, // HIGH
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 64000,
+      linearPCMBitDepth: 16,
+      linearPCMIsBigEndian: false,
+      linearPCMIsFloat: false
+    },
+    web: {
+      mimeType: 'audio/webm',
+      bitsPerSecond: 64000
+    }
+  };
+
+  const resetAudioMode = async () => {
+    if (!Audio) return;
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false
+      });
+    } catch (e) {}
+  };
+
+  const stopAndCleanupRecording = async () => {
+    setIsRecording(false);
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (rec) {
+      try {
+        await rec.stopAndUnloadAsync();
+      } catch (e) {}
+    }
+    await resetAudioMode();
+  };
+
+  useEffect(() => {
+    return () => {
+      stopAndCleanupRecording();
+    };
+  }, []);
+
   // Запит до ШІ-Аналітика
-  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/m4a') => {
+  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/mp4') => {
     const q = customQuestion !== null ? customQuestion : questionInput.trim();
     if (!q && !audioBase64) return;
 
@@ -174,27 +232,33 @@ export default function AnalyticsScreen({
     }
 
     if (isRecording) {
+      setIsRecording(false);
+      const rec = recordingRef.current;
+      recordingRef.current = null;
+      let uri = null;
       try {
-        setIsRecording(false);
-        const rec = recordingRef.current;
-        if (!rec) return;
-        await rec.stopAndUnloadAsync();
-        const uri = rec.getURI();
-        recordingRef.current = null;
-
-        if (uri && FileSystem) {
-          const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType?.Base64 || 'base64'
-          });
-          const mime = Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4';
-          await handleAskAI('', base64, mime);
-        } else {
-          setAiError('Не вдалося прочитати аудіофайл.');
+        if (rec) {
+          await rec.stopAndUnloadAsync();
+          uri = rec.getURI();
         }
       } catch (e) {
         setAiError('Помилка зупинки запису: ' + (e?.message || ''));
+      } finally {
+        await resetAudioMode();
+      }
+
+      if (uri && FileSystem) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType?.Base64 || 'base64'
+          });
+          await handleAskAI('', base64, 'audio/mp4');
+        } catch (readErr) {
+          setAiError('Не вдалося прочитати аудіозапис.');
+        }
       }
     } else {
+      await stopAndCleanupRecording();
       try {
         setAiError('');
         const perm = await Audio.requestPermissionsAsync();
@@ -204,14 +268,19 @@ export default function AnalyticsScreen({
         }
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: true,
-          playsInSilentModeIOS: true
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false
         });
-        const { recording } = await Audio.Recording.createAsync(
-          Audio.RecordingOptionsPresets.HIGH_QUALITY
-        );
+        const recording = new Audio.Recording();
+        await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
+        await recording.startAsync();
+
         recordingRef.current = recording;
         setIsRecording(true);
       } catch (e) {
+        await stopAndCleanupRecording();
         setAiError('Не вдалося почати запис: ' + (e?.message || ''));
         setIsRecording(false);
       }

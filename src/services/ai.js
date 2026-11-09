@@ -332,11 +332,21 @@ export async function analyzeTransactionsWithAI({
         if (!response.ok) {
           const errMsg = resData?.error?.message || `HTTP ${response.status}`;
           if (response.status === 404 || response.status === 503 || response.status === 429) {
+            cachedWorkingModel = null;
             lastError = new Error(errMsg);
             continue;
           }
           if (response.status === 400 && errMsg.toLowerCase().includes('api key')) {
             throw new Error('Невірний Gemini API ключ. Перевірте його у Налаштуваннях.');
+          }
+          if (
+            response.status === 400 &&
+            (errMsg.toLowerCase().includes('payload') ||
+              errMsg.toLowerCase().includes('size') ||
+              errMsg.toLowerCase().includes('limit') ||
+              errMsg.toLowerCase().includes('too large'))
+          ) {
+            throw new Error('Розмір файлу занадто великий для обробки. Зробіть фото ближче або оберіть файл меншого розміру.');
           }
           lastError = new Error(`Помилка Gemini API: ${errMsg}`);
           continue;
@@ -413,10 +423,12 @@ export async function askAIAnalytics({
   question = '',
   audioBase64 = null,
   audioMimeType = 'audio/mp4',
+  mimeType,
   transactions = [],
   categories = [],
   incomeGroups = []
 }) {
+  const effectiveAudioMime = mimeType || audioMimeType || 'audio/mp4';
   const cleanKey = String(
     apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
   ).trim();
@@ -463,7 +475,7 @@ ${JSON.stringify(compactTx)}
   if (audioBase64) {
     parts.push({
       inlineData: {
-        mimeType: audioMimeType,
+        mimeType: effectiveAudioMime,
         data: audioBase64
       }
     });
@@ -497,6 +509,7 @@ ${JSON.stringify(compactTx)}
       if (!response.ok) {
         const errMsg = resData?.error?.message || `HTTP ${response.status}`;
         if (response.status === 404 || response.status === 503 || response.status === 429) {
+          cachedWorkingModel = null;
           lastError = new Error(errMsg);
           continue;
         }
