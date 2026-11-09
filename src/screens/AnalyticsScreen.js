@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { askAIAnalytics } from '../services/ai';
@@ -135,33 +135,6 @@ export default function AnalyticsScreen({
     return `${num.toLocaleString('uk-UA')} ₴`;
   };
 
-  const VOICE_RECORDING_OPTIONS = {
-    isMeteringEnabled: true,
-    android: {
-      extension: '.m4a',
-      outputFormat: 2, // MPEG_4
-      audioEncoder: 3, // AAC
-      sampleRate: 44100,
-      numberOfChannels: 1, // Моно: менший розмір, швидка передача
-      bitRate: 64000
-    },
-    ios: {
-      extension: '.m4a',
-      outputFormat: 'aac ',
-      audioQuality: 0x60, // HIGH
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 64000,
-      linearPCMBitDepth: 16,
-      linearPCMIsBigEndian: false,
-      linearPCMIsFloat: false
-    },
-    web: {
-      mimeType: 'audio/webm',
-      bitsPerSecond: 64000
-    }
-  };
-
   const resetAudioMode = async () => {
     if (!Audio) return;
     try {
@@ -252,9 +225,14 @@ export default function AnalyticsScreen({
           const base64 = await FileSystem.readAsStringAsync(uri, {
             encoding: FileSystem.EncodingType?.Base64 || 'base64'
           });
-          await handleAskAI('', base64, 'audio/mp4');
+          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+          const lowerUri = uri.toLowerCase();
+          const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
+            ? 'audio/3gpp'
+            : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+          await handleAskAI('', base64, detectedMime);
         } catch (readErr) {
-          setAiError('Не вдалося прочитати аудіозапис.');
+          setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
         }
       }
     } else {
@@ -273,9 +251,11 @@ export default function AnalyticsScreen({
           shouldDuckAndroid: true,
           playThroughEarpieceAndroid: false
         });
-        const recording = new Audio.Recording();
-        await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
-        await recording.startAsync();
+        // Невелика пауза для звільнення нативного MediaRecorder на Android
+        await new Promise(r => setTimeout(r, 120));
+
+        const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
+        const { recording } = await Audio.Recording.createAsync(preset);
 
         recordingRef.current = recording;
         setIsRecording(true);

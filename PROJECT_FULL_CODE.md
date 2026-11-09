@@ -1,4 +1,4 @@
-# Повний код проєкту «Наші Гроші» (v1.1.0)
+# Повний код проєкту «Наші Гроші» (v1.1.1)
 
 > Автоматично згенеровано: 2026-11-09 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -54,7 +54,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -78,7 +78,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 10,
+      "versionCode": 11,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -173,14 +173,14 @@ export default app;
 const DEFAULT_FALLBACK_GEMINI_KEY = '';
 
 const PREFERRED_GEMINI_MODELS = [
-  'gemini-3.5-flash-lite',
-  'gemini-3.8-flash',
   'gemini-flash-lite-latest',
-  'gemini-flash-latest',
-  'gemini-3.7-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
   'gemini-3.6-flash',
+  'gemini-3.8-flash',
+  'gemini-flash-latest',
   'gemini-3.5-flash',
-  'gemini-3.1-flash-lite'
+  'gemini-3.7-flash'
 ];
 
 let cachedWorkingModel = null;
@@ -961,33 +961,6 @@ export default function AIAssistantModal({
     }
   }, [isRecording]);
 
-  const VOICE_RECORDING_OPTIONS = {
-    isMeteringEnabled: true,
-    android: {
-      extension: '.m4a',
-      outputFormat: 2, // MPEG_4
-      audioEncoder: 3, // AAC
-      sampleRate: 44100,
-      numberOfChannels: 1, // Моно: вдвічі менший розмір, швидка передача
-      bitRate: 64000
-    },
-    ios: {
-      extension: '.m4a',
-      outputFormat: 'aac ',
-      audioQuality: 0x60, // HIGH
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 64000,
-      linearPCMBitDepth: 16,
-      linearPCMIsBigEndian: false,
-      linearPCMIsFloat: false
-    },
-    web: {
-      mimeType: 'audio/webm',
-      bitsPerSecond: 64000
-    }
-  };
-
   const resetAudioMode = async () => {
     if (!Audio) return;
     try {
@@ -1048,9 +1021,11 @@ export default function AIAssistantModal({
         playThroughEarpieceAndroid: false
       });
 
-      const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
-      await recording.startAsync();
+      // Коротка пауза для звільнення нативного MediaRecorder на Android
+      await new Promise(r => setTimeout(r, 120));
+
+      const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
+      const { recording } = await Audio.Recording.createAsync(preset);
 
       recordingRef.current = recording;
       setIsRecording(true);
@@ -1095,18 +1070,28 @@ export default function AIAssistantModal({
         throw new Error('Модуль читання файлів недоступний.');
       }
       const base64Audio = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64
+        encoding: FileSystem.EncodingType?.Base64 || 'base64'
       });
+
+      // Очищаємо тимчасовий файл у кеші, щоб наступні записи стартували миттєво
+      try {
+        await FileSystem.deleteAsync(uri, { idempotent: true });
+      } catch (e) {}
 
       if (!base64Audio || base64Audio.length < 50) {
         throw new Error('Запис порожній або занадто короткий. Скажіть витрату чіткіше.');
       }
 
+      const lowerUri = uri.toLowerCase();
+      const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
+        ? 'audio/3gpp'
+        : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+
       const result = await analyzeTransactionsWithAI({
         apiKey: effectiveApiKey,
         mode: 'voice',
         audioBase64: base64Audio,
-        audioMimeType: 'audio/mp4',
+        audioMimeType: detectedMime,
         categories,
         incomeGroups,
         defaultAuthor
@@ -1151,12 +1136,12 @@ export default function AIAssistantModal({
         }
       }
 
-      // quality: 0.35 стискає фото до ~150-300 КБ, що усуває OOM/зависання
-      // та передає чек у Gemini з бездоганною чіткістю
+      // quality: 0.25 зменшує розмір фото з 12-50МП камери до ~120-250 КБ,
+      // щоб React Native OkHttp не зависав під час відправки Base64 у Gemini
       const pickerOptions = {
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.35,
+        quality: 0.25,
         base64: true
       };
 
@@ -1170,7 +1155,7 @@ export default function AIAssistantModal({
       let base64Data = asset.base64;
       if (!base64Data && asset.uri && FileSystem) {
         base64Data = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64
+          encoding: FileSystem.EncodingType?.Base64 || 'base64'
         });
       }
 
@@ -2746,7 +2731,7 @@ const styles = StyleSheet.create({
 **Файл:** `src/screens/AnalyticsScreen.js`
 
 ```javascript
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { askAIAnalytics } from '../services/ai';
@@ -2883,33 +2868,6 @@ export default function AnalyticsScreen({
     return `${num.toLocaleString('uk-UA')} ₴`;
   };
 
-  const VOICE_RECORDING_OPTIONS = {
-    isMeteringEnabled: true,
-    android: {
-      extension: '.m4a',
-      outputFormat: 2, // MPEG_4
-      audioEncoder: 3, // AAC
-      sampleRate: 44100,
-      numberOfChannels: 1, // Моно: менший розмір, швидка передача
-      bitRate: 64000
-    },
-    ios: {
-      extension: '.m4a',
-      outputFormat: 'aac ',
-      audioQuality: 0x60, // HIGH
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 64000,
-      linearPCMBitDepth: 16,
-      linearPCMIsBigEndian: false,
-      linearPCMIsFloat: false
-    },
-    web: {
-      mimeType: 'audio/webm',
-      bitsPerSecond: 64000
-    }
-  };
-
   const resetAudioMode = async () => {
     if (!Audio) return;
     try {
@@ -3000,9 +2958,14 @@ export default function AnalyticsScreen({
           const base64 = await FileSystem.readAsStringAsync(uri, {
             encoding: FileSystem.EncodingType?.Base64 || 'base64'
           });
-          await handleAskAI('', base64, 'audio/mp4');
+          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+          const lowerUri = uri.toLowerCase();
+          const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
+            ? 'audio/3gpp'
+            : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+          await handleAskAI('', base64, detectedMime);
         } catch (readErr) {
-          setAiError('Не вдалося прочитати аудіозапис.');
+          setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
         }
       }
     } else {
@@ -3021,9 +2984,11 @@ export default function AnalyticsScreen({
           shouldDuckAndroid: true,
           playThroughEarpieceAndroid: false
         });
-        const recording = new Audio.Recording();
-        await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
-        await recording.startAsync();
+        // Невелика пауза для звільнення нативного MediaRecorder на Android
+        await new Promise(r => setTimeout(r, 120));
+
+        const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
+        const { recording } = await Audio.Recording.createAsync(preset);
 
         recordingRef.current = recording;
         setIsRecording(true);
