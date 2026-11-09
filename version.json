@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.1/app-release.apk",
-  "releaseNotes": "v1.1.1: Виправлено виліт екрану Аналітики (відсутній імпорт useEffect), відновлено стабільний пресет Audio.Recording.createAsync з очищенням кеш-файлів для багаторазового голосового вводу та прискорено розпізнавання фото чеків."
+  "version": "1.1.2",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.2/app-release.apk",
+  "releaseNotes": "v1.1.2: На головному екрані кнопки ШІ («Голос», «Фото», «Скріншот», «Текст») тепер працюють напряму в картці (за зразком екрану Аналітики) без блокування модальними вікнами чи плаваючими шапками."
 }

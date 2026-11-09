@@ -1,6 +1,6 @@
 {
   "name": "nashi-hroshi",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {

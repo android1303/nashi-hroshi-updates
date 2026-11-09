@@ -16,27 +16,17 @@ import {
   Linking
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Audio } from 'expo-av';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import { analyzeTransactionsWithAI } from '../services/ai';
-
-let Audio = null;
-try {
-  Audio = require('expo-av').Audio;
-} catch (e) {}
-
-let ImagePicker = null;
-try {
-  ImagePicker = require('expo-image-picker');
-} catch (e) {}
-
-let FileSystem = null;
-try {
-  FileSystem = require('expo-file-system');
-} catch (e) {}
 
 export default function AIAssistantModal({
   visible,
   onClose,
   initialTab = 'voice', // 'voice' | 'photo' | 'text'
+  initialAction = null, // 'voice' | 'camera' | 'gallery' | null
+  onClearInitialAction,
   theme,
   isLight,
   cardBg,
@@ -77,21 +67,51 @@ export default function AIAssistantModal({
   const [tempApiKey, setTempApiKey] = useState(geminiApiKey || '');
   const [showKeyInput, setShowKeyInput] = useState(false);
 
-  const effectiveApiKey = (geminiApiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '').trim();
+  const effectiveApiKey = (geminiApiKey || tempApiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '').trim();
 
+  // Синхронізуємо вкладку при відкритті модалки (і очищаємо мікрофон при закритті)
   useEffect(() => {
     if (visible) {
       setActiveTab(initialTab || 'voice');
       setErrorMsg('');
-      setTempApiKey(geminiApiKey || '');
-      setShowKeyInput(!effectiveApiKey);
     } else {
       stopAndCleanupRecording();
     }
+  }, [visible, initialTab]);
+
+  // Автозапуск дії (голос / камера / галерея), якщо відкрито з кнопки швидкої дії
+  useEffect(() => {
+    if (!visible || !initialAction) return;
+    const action = initialAction;
+    if (onClearInitialAction) onClearInitialAction();
+    const t = setTimeout(() => {
+      if (action === 'voice') {
+        startVoiceRecording();
+      } else if (action === 'camera') {
+        handlePickImage(true);
+      } else if (action === 'gallery') {
+        handlePickImage(false);
+      }
+    }, 150);
+    return () => clearTimeout(t);
+  }, [visible, initialAction]);
+
+  // Очищаємо мікрофон при розмонтуванні
+  useEffect(() => {
     return () => {
       stopAndCleanupRecording();
     };
-  }, [visible, initialTab, geminiApiKey]);
+  }, []);
+
+  // Окремо синхронізуємо ключ із Firestore, НЕ скидаючи поточний запис голосу
+  useEffect(() => {
+    if (geminiApiKey) {
+      setTempApiKey(geminiApiKey);
+      if (geminiApiKey.trim()) {
+        setShowKeyInput(false);
+      }
+    }
+  }, [geminiApiKey]);
 
   // Пульсація мікрофона під час запису
   useEffect(() => {
@@ -150,11 +170,6 @@ export default function AIAssistantModal({
 
   const startVoiceRecording = async () => {
     setErrorMsg('');
-    if (!effectiveApiKey) {
-      setShowKeyInput(true);
-      setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
-      return;
-    }
     if (!Audio) {
       setErrorMsg('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
       return;
@@ -219,6 +234,12 @@ export default function AIAssistantModal({
 
     if (!uri) return;
 
+    if (!effectiveApiKey) {
+      setShowKeyInput(true);
+      setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
+      return;
+    }
+
     setIsAnalyzing(true);
     setErrorMsg('');
 
@@ -268,11 +289,6 @@ export default function AIAssistantModal({
 
   const handlePickImage = async (useCamera = false) => {
     setErrorMsg('');
-    if (!effectiveApiKey) {
-      setShowKeyInput(true);
-      setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
-      return;
-    }
     if (!ImagePicker) {
       setErrorMsg('Модуль камери/галереї (expo-image-picker) недоступний.');
       return;
@@ -282,13 +298,7 @@ export default function AIAssistantModal({
       if (useCamera) {
         const camPerm = await ImagePicker.requestCameraPermissionsAsync();
         if (camPerm.status !== 'granted') {
-          setErrorMsg('Надайте дозвіл на використання камери.');
-          return;
-        }
-      } else {
-        const libPerm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (libPerm.status !== 'granted') {
-          setErrorMsg('Надайте дозвіл на доступ до галереї фото.');
+          setErrorMsg('Надайте дозвіл на використання камери в налаштуваннях телефону.');
           return;
         }
       }
@@ -302,11 +312,19 @@ export default function AIAssistantModal({
         base64: true
       };
 
-      const res = useCamera
-        ? await ImagePicker.launchCameraAsync(pickerOptions)
-        : await ImagePicker.launchImageLibraryAsync(pickerOptions);
+      let res = null;
+      if (useCamera) {
+        res = await ImagePicker.launchCameraAsync(pickerOptions);
+      } else {
+        try {
+          res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
+        } catch (galleryErr) {
+          await ImagePicker.requestMediaLibraryPermissionsAsync();
+          res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
+        }
+      }
 
-      if (res.canceled || !res.assets || res.assets.length === 0) return;
+      if (!res || res.canceled || !res.assets || res.assets.length === 0) return;
 
       const asset = res.assets[0];
       let base64Data = asset.base64;
@@ -335,6 +353,12 @@ export default function AIAssistantModal({
       setSelectedImageUri(asset.uri);
       setSelectedImageBase64(base64Data);
       setSelectedImageMime(mimeType);
+
+      if (!effectiveApiKey) {
+        setShowKeyInput(true);
+        setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
+        return;
+      }
 
       // Одразу запускаємо аналіз фото через Gemini
       await runPhotoAnalysis(base64Data, mimeType, receiptSplitMode);
@@ -433,25 +457,33 @@ export default function AIAssistantModal({
 
   const totalParsedSum = parsedItems.reduce((acc, item) => acc + (Number(item.amount) || 0), 0);
 
-  return (
-    <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}
-      >
-        <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
+  if (!visible) return null;
 
-        <View
-          style={[
-            styles.modalSheet,
-            {
-              backgroundColor: cardBg,
-              borderColor,
-              borderTopWidth: 1,
-              maxHeight: '90%'
-            }
-          ]}
-        >
+  return (
+    <View
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          zIndex: 999,
+          elevation: 999,
+          backgroundColor: 'rgba(0,0,0,0.65)',
+          justifyContent: 'flex-end'
+        }
+      ]}
+    >
+      <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
+
+      <View
+        style={[
+          styles.modalSheet,
+          {
+            backgroundColor: cardBg,
+            borderColor,
+            borderTopWidth: 1,
+            maxHeight: '90%'
+          }
+        ]}
+      >
           {/* Індикатор шторки + Заголовок */}
           <View style={{ alignItems: 'center', paddingTop: 10, paddingBottom: 6 }}>
             <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: theme.subText, opacity: 0.3 }} />
@@ -624,30 +656,22 @@ export default function AIAssistantModal({
                     : 'Натисніть на мікрофон і скажіть одну або кілька витрат чи доходів'}
                 </Text>
 
-                <View style={{ justifyContent: 'center', alignItems: 'center', marginVertical: 8 }}>
-                  <Animated.View
-                    pointerEvents="none"
+                <TouchableOpacity
+                  activeOpacity={0.75}
+                  onPress={isRecording ? finishVoiceRecordingAndAnalyze : startVoiceRecording}
+                  disabled={isAnalyzing}
+                  style={{ alignItems: 'center', paddingVertical: 6 }}
+                >
+                  <View
                     style={{
-                      position: 'absolute',
-                      width: 96,
-                      height: 96,
-                      borderRadius: 48,
-                      backgroundColor: isRecording ? theme.expense + '28' : theme.primary + '18',
-                      transform: [{ scale: pulseAnim }]
-                    }}
-                  />
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={isRecording ? finishVoiceRecordingAndAnalyze : startVoiceRecording}
-                    disabled={isAnalyzing}
-                    style={{
-                      width: 78,
-                      height: 78,
-                      borderRadius: 39,
+                      width: 82,
+                      height: 82,
+                      borderRadius: 41,
                       backgroundColor: isRecording ? theme.expense : theme.primary,
                       justifyContent: 'center',
                       alignItems: 'center',
-                      elevation: 6
+                      borderWidth: 4,
+                      borderColor: isRecording ? theme.expense + '44' : theme.primary + '33'
                     }}
                   >
                     {isAnalyzing ? (
@@ -659,10 +683,15 @@ export default function AIAssistantModal({
                         color={isRecording ? '#FFF' : theme.primaryText}
                       />
                     )}
-                  </TouchableOpacity>
-                </View>
+                  </View>
+                  {!isRecording && (
+                    <Text style={[styles.fontBold, { color: theme.primary, fontSize: 13, marginTop: 10 }]}>
+                      Торкніться, щоб почати запис
+                    </Text>
+                  )}
+                </TouchableOpacity>
 
-                {isRecording ? (
+                {isRecording && (
                   <View style={{ alignItems: 'center', marginTop: 10 }}>
                     <Text style={[styles.fontBold, { color: theme.expense, fontSize: 16 }]}>
                       ● {formatTimer(recordingSeconds)}
@@ -696,10 +725,6 @@ export default function AIAssistantModal({
                       </TouchableOpacity>
                     </View>
                   </View>
-                ) : (
-                  <Text style={[styles.fontBold, { color: theme.primary, fontSize: 12, marginTop: 10 }]}>
-                    Торкніться, щоб почати запис
-                  </Text>
                 )}
               </View>
             )}
@@ -1254,8 +1279,7 @@ export default function AIAssistantModal({
             )}
           </ScrollView>
         </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </View>
   );
 }
 

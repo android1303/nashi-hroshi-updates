@@ -736,7 +736,7 @@ export default function App() {
 
         <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ scale: scaleAnim }] }}>
           {currentScreen === 'main' && (
-            <CurrentMonthScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} showBudgetWidget={showBudgetWidget} plannedIncome={plannedIncome} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} budgetMode={budgetMode} handleOpenEditModal={handleOpenEditModal} promptDelete={(id) => {setItemToDelete(id); setDeleteModalVisible(true);}} onNavigate={navigateTo} onOpenAI={handleOpenAIModal} />
+            <CurrentMonthScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} showBudgetWidget={showBudgetWidget} plannedIncome={plannedIncome} categoryLimits={categoryLimits} personalCategoryLimits={personalCategoryLimits} budgetMode={budgetMode} handleOpenEditModal={handleOpenEditModal} promptDelete={(id) => {setItemToDelete(id); setDeleteModalVisible(true);}} onNavigate={navigateTo} onOpenAI={handleOpenAIModal} geminiApiKey={geminiApiKey} defaultAuthor={globalUserFilter !== 'all' ? globalUserFilter : currentDeviceUser} onSaveAITransactions={handleSaveAITransactions} />
           )}
           {currentScreen === 'analytics' && (
             <AnalyticsScreen theme={theme} isLight={isLight} bgColor={bgColor} cardBg={cardBg} borderColor={borderColor} hideBalance={hideBalance} transactions={transactions} categories={categories} incomeGroups={incomeGroups} showIcons={showIcons} globalUserFilter={globalUserFilter} geminiApiKey={geminiApiKey} onBack={() => navigateTo('main')} />
@@ -1168,7 +1168,7 @@ export default function App() {
           borderColor={borderColor}
           categories={categories}
           incomeGroups={incomeGroups}
-          defaultAuthor={globalUserFilter !== 'all' ? globalUserFilter : 'Андрій'}
+          defaultAuthor={globalUserFilter !== 'all' ? globalUserFilter : currentDeviceUser}
           geminiApiKey={geminiApiKey}
           onSaveApiKey={(key) => updateSettings({ geminiApiKey: key })}
           onSaveTransactions={handleSaveAITransactions}
