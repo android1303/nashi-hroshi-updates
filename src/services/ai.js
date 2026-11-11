@@ -2,18 +2,43 @@
 
 const DEFAULT_FALLBACK_GEMINI_KEY = '';
 
+// Актуальні стабільні мультимодальні моделі Google AI Studio (v1beta API)
 const PREFERRED_GEMINI_MODELS = [
-  'gemini-flash-lite-latest',
-  'gemini-3.1-flash-lite',
-  'gemini-3.5-flash-lite',
-  'gemini-3.6-flash',
-  'gemini-3.8-flash',
-  'gemini-flash-latest',
-  'gemini-3.5-flash',
-  'gemini-3.7-flash'
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b'
 ];
 
 let cachedWorkingModel = null;
+
+/**
+ * fetch з таймаутом через AbortController для захисту від нескінченного зависання на Android
+ */
+async function fetchWithTimeout(url, options = {}, timeoutMs = 16000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch (e) {}
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    return response;
+  } catch (err) {
+    if (err.name === 'AbortError' || (err.message && err.message.toLowerCase().includes('abort'))) {
+      throw new Error(`Час очікування Gemini API вичерпано (${Math.round(timeoutMs / 1000)} сек). Перевірте інтернет-з'єднання і спробуйте знову.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Автоматичний пошук доступних моделей для ключа користувача через ListModels API
@@ -21,7 +46,7 @@ let cachedWorkingModel = null;
 async function discoverAvailableModels(cleanKey) {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) return [];
     const data = await res.json();
     const models = Array.isArray(data?.models) ? data.models : [];
@@ -54,18 +79,17 @@ async function discoverAvailableModels(cleanKey) {
       })
       .map(m => m.name.replace(/^models\//, ''));
 
-    // Сортуємо: спочатку нові моделі серії 3.5 / 3.8 flash-lite та flash, які гарантовано доступні новим користувачам
+    // Сортуємо: спочатку найшвидші стабільні flash моделі
     supported.sort((a, b) => {
       const score = (n) => {
-        if (n === 'gemini-3.5-flash-lite') return 110;
-        if (n === 'gemini-3.8-flash') return 105;
-        if (n === 'gemini-flash-lite-latest') return 100;
-        if (n === 'gemini-flash-latest') return 95;
-        if (n.includes('3.8-flash')) return 92;
-        if (n.includes('3.7-flash')) return 90;
-        if (n.includes('3.6-flash')) return 88;
-        if (n.includes('3.5-flash')) return 85;
-        if (n.includes('3.1-flash')) return 80;
+        if (n === 'gemini-2.5-flash') return 120;
+        if (n === 'gemini-2.0-flash') return 110;
+        if (n === 'gemini-2.0-flash-lite') return 105;
+        if (n === 'gemini-1.5-flash') return 100;
+        if (n === 'gemini-1.5-flash-8b') return 95;
+        if (n.includes('2.5-flash')) return 90;
+        if (n.includes('2.0-flash')) return 85;
+        if (n.includes('1.5-flash')) return 80;
         if (n.includes('flash')) return 60;
         if (n.includes('pro')) return 40;
         return 10;
@@ -304,10 +328,11 @@ export async function analyzeTransactionsWithAI({
     throw new Error('Немає даних для аналізу (запишіть голос, додайте фото або введіть текст).');
   }
 
-  // Спочатку пробуємо швидкі моделі серії 3.5-flash-lite / 3.8-flash
-  let modelsToTry = cachedWorkingModel
+  // Спочатку пробуємо перевірені швидкі моделі (не більше 2, щоб уникнути вичерпання квоти)
+  const candidateModels = cachedWorkingModel
     ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
     : [...PREFERRED_GEMINI_MODELS];
+  const modelsToTry = candidateModels.slice(0, 2);
 
   let lastError = null;
 
@@ -315,7 +340,7 @@ export async function analyzeTransactionsWithAI({
     for (const modelName of modelList) {
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -325,29 +350,48 @@ export async function analyzeTransactionsWithAI({
               responseMimeType: 'application/json'
             }
           })
-        });
+        }, 16000);
 
         const resData = await response.json();
 
         if (!response.ok) {
           const errMsg = resData?.error?.message || `HTTP ${response.status}`;
-          if (response.status === 404 || response.status === 503 || response.status === 429) {
+          const errMsgLower = errMsg.toLowerCase();
+
+          // 1. Перевищення ліміту безкоштовного тарифу (15 RPM) — миттєво зупиняємо цикл
+          if (response.status === 429 || errMsgLower.includes('quota') || errMsgLower.includes('resource_exhausted')) {
+            cachedWorkingModel = null;
+            throw new Error('Перевищено хвилинний ліміт запитів Gemini API (15 запитів/хв для безкоштовного тарифу). Будь ласка, зачекайте 10–15 секунд і спробуйте знову.');
+          }
+
+          // 2. Невірний або прострочений API ключ — миттєво зупиняємось
+          if (
+            response.status === 401 ||
+            response.status === 403 ||
+            (response.status === 400 && (errMsgLower.includes('api key') || errMsgLower.includes('api_key') || errMsgLower.includes('key not valid') || errMsgLower.includes('unauthenticated')))
+          ) {
+            cachedWorkingModel = null;
+            throw new Error('Невірний або недійсний Gemini API ключ. Перевірте його у Налаштуваннях додатку (⚙️).');
+          }
+
+          // 3. Занадто великий розмір зображення
+          if (
+            response.status === 400 &&
+            (errMsgLower.includes('payload') ||
+              errMsgLower.includes('size') ||
+              errMsgLower.includes('limit') ||
+              errMsgLower.includes('too large'))
+          ) {
+            throw new Error('Розмір файлу занадто великий для обробки. Зробіть фото ближче або оберіть файл меншого розміру.');
+          }
+
+          // 4. Тимчасові помилки окремої моделі (404 чи 503) — переходимо до запасного варіанту
+          if (response.status === 404 || response.status === 503) {
             cachedWorkingModel = null;
             lastError = new Error(errMsg);
             continue;
           }
-          if (response.status === 400 && errMsg.toLowerCase().includes('api key')) {
-            throw new Error('Невірний Gemini API ключ. Перевірте його у Налаштуваннях.');
-          }
-          if (
-            response.status === 400 &&
-            (errMsg.toLowerCase().includes('payload') ||
-              errMsg.toLowerCase().includes('size') ||
-              errMsg.toLowerCase().includes('limit') ||
-              errMsg.toLowerCase().includes('too large'))
-          ) {
-            throw new Error('Розмір файлу занадто великий для обробки. Зробіть фото ближче або оберіть файл меншого розміру.');
-          }
+
           lastError = new Error(`Помилка Gemini API: ${errMsg}`);
           continue;
         }
@@ -392,7 +436,16 @@ export async function analyzeTransactionsWithAI({
         };
       } catch (err) {
         lastError = err;
-        if (err.message && (err.message.includes('API ключ') || err.message === 'MISSING_API_KEY')) {
+        // Фатальні помилки прокидаємо одразу без марних повторів
+        if (
+          err.message && (
+            err.message.includes('хвилинний ліміт') ||
+            err.message.includes('API ключ') ||
+            err.message === 'MISSING_API_KEY' ||
+            err.message.includes('Час очікування') ||
+            err.message.includes('Розмір файлу')
+          )
+        ) {
           throw err;
         }
       }
@@ -400,19 +453,19 @@ export async function analyzeTransactionsWithAI({
     return null;
   };
 
-  // Спроба 1: пріоритетний список моделей (gemini-3.5-flash-lite, gemini-3.8-flash тощо)
+  // Спроба 1: пріоритетні моделі (максимум 2 запити)
   const firstResult = await tryGenerateWithList(modelsToTry);
   if (firstResult) return firstResult;
 
-  // Спроба 2: якщо Google змінив назви моделей — автоматично опитуємо ListModels API
+  // Спроба 2: якщо обидві моделі повернули 404/503 — перевіряємо ListModels і пробуємо лише одну найкращу модель
   const discovered = await discoverAvailableModels(cleanKey);
-  const newModels = discovered.filter(m => !modelsToTry.includes(m));
+  const newModels = discovered.filter(m => !modelsToTry.includes(m)).slice(0, 1);
   if (newModels.length > 0) {
     const secondResult = await tryGenerateWithList(newModels);
     if (secondResult) return secondResult;
   }
 
-  throw lastError || new Error('Не вдалося з’єднатися з Gemini AI.');
+  throw lastError || new Error('Не вдалося з’єднатися з Gemini AI. Перевірте з’єднання.');
 }
 
 /**
@@ -433,7 +486,7 @@ export async function askAIAnalytics({
     apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
   ).trim();
   if (!cleanKey) {
-    throw new Error('Вкажіть ключ Gemini API у Налаштуваннях додатку.');
+    throw new Error('Вкажіть ключ Gemini API у Налаштуваннях додатку (⚙️).');
   }
 
   // Формуємо компактний дамп операцій для економії токенів
@@ -484,16 +537,17 @@ ${JSON.stringify(compactTx)}
     parts.push({ text: `Запитання користувача: "${question.trim()}"` });
   }
 
-  let modelsToTry = cachedWorkingModel
+  const candidateModels = cachedWorkingModel
     ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
     : [...PREFERRED_GEMINI_MODELS];
+  const modelsToTry = candidateModels.slice(0, 2);
 
   let lastError = null;
 
   for (const modelName of modelsToTry) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -503,16 +557,33 @@ ${JSON.stringify(compactTx)}
             responseMimeType: 'application/json'
           }
         })
-      });
+      }, 16000);
 
       const resData = await response.json();
       if (!response.ok) {
         const errMsg = resData?.error?.message || `HTTP ${response.status}`;
-        if (response.status === 404 || response.status === 503 || response.status === 429) {
+        const errMsgLower = errMsg.toLowerCase();
+
+        if (response.status === 429 || errMsgLower.includes('quota') || errMsgLower.includes('resource_exhausted')) {
+          cachedWorkingModel = null;
+          throw new Error('Перевищено хвилинний ліміт запитів Gemini API (15 запитів/хв для безкоштовного тарифу). Будь ласка, зачекайте 10–15 секунд і спробуйте знову.');
+        }
+
+        if (
+          response.status === 401 ||
+          response.status === 403 ||
+          (response.status === 400 && (errMsgLower.includes('api key') || errMsgLower.includes('api_key') || errMsgLower.includes('key not valid') || errMsgLower.includes('unauthenticated')))
+        ) {
+          cachedWorkingModel = null;
+          throw new Error('Невірний або недійсний Gemini API ключ. Перевірте його у Налаштуваннях додатку (⚙️).');
+        }
+
+        if (response.status === 404 || response.status === 503) {
           cachedWorkingModel = null;
           lastError = new Error(errMsg);
           continue;
         }
+
         throw new Error(errMsg);
       }
 
@@ -529,6 +600,16 @@ ${JSON.stringify(compactTx)}
       return JSON.parse(cleaned);
     } catch (err) {
       lastError = err;
+      if (
+        err.message && (
+          err.message.includes('хвилинний ліміт') ||
+          err.message.includes('API ключ') ||
+          err.message === 'MISSING_API_KEY' ||
+          err.message.includes('Час очікування')
+        )
+      ) {
+        throw err;
+      }
     }
   }
 

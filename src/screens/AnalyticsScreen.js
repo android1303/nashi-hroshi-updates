@@ -211,13 +211,21 @@ export default function AnalyticsScreen({
       let uri = null;
       try {
         if (rec) {
-          await rec.stopAndUnloadAsync();
           uri = rec.getURI();
+          await rec.stopAndUnloadAsync();
+          if (!uri) {
+            uri = rec.getURI();
+          }
         }
       } catch (e) {
         setAiError('Помилка зупинки запису: ' + (e?.message || ''));
       } finally {
         await resetAudioMode();
+      }
+
+      if (!uri) {
+        setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+        return;
       }
 
       if (uri && FileSystem) {

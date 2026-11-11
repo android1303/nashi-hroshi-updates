@@ -119,8 +119,11 @@ export default function CurrentMonthScreen({
       let uri = null;
       try {
         if (rec) {
-          await rec.stopAndUnloadAsync();
           uri = rec.getURI();
+          await rec.stopAndUnloadAsync();
+          if (!uri) {
+            uri = rec.getURI();
+          }
         }
       } catch (e) {
         setAiError('Помилка зупинки запису: ' + (e?.message || ''));
@@ -128,7 +131,10 @@ export default function CurrentMonthScreen({
         await resetAudioMode();
       }
 
-      if (!uri) return;
+      if (!uri) {
+        setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+        return;
+      }
       if (!effectiveApiKey) {
         setAiError('Спочатку вкажіть ключ Gemini API у Налаштуваннях (⚙️).');
         return;
@@ -218,7 +224,7 @@ export default function CurrentMonthScreen({
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.25,
+        quality: 0.15,
         base64: true
       };
 
@@ -242,6 +248,11 @@ export default function CurrentMonthScreen({
         base64Data = await FileSystem.readAsStringAsync(asset.uri, {
           encoding: FileSystem.EncodingType?.Base64 || 'base64'
         });
+      }
+
+      // Видаляємо тимчасовий кеш фото після зчитування Base64
+      if (asset.uri && FileSystem) {
+        try { await FileSystem.deleteAsync(asset.uri, { idempotent: true }); } catch (e) {}
       }
 
       if (!base64Data) {
@@ -696,7 +707,7 @@ export default function CurrentMonthScreen({
               <TouchableOpacity
                 activeOpacity={0.75}
                 onPress={handleInlineVoiceToggle}
-                disabled={aiLoading}
+                disabled={aiLoading && !isRecording}
                 style={{
                   flex: 1.15,
                   flexDirection: 'row',

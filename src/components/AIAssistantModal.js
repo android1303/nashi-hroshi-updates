@@ -224,15 +224,21 @@ export default function AIAssistantModal({
 
     let uri = null;
     try {
-      await rec.stopAndUnloadAsync();
       uri = rec.getURI();
+      await rec.stopAndUnloadAsync();
+      if (!uri) {
+        uri = rec.getURI();
+      }
     } catch (err) {
       setErrorMsg('Не вдалося зупинити запис: ' + (err.message || ''));
     } finally {
       await resetAudioMode();
     }
 
-    if (!uri) return;
+    if (!uri) {
+      setErrorMsg('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+      return;
+    }
 
     if (!effectiveApiKey) {
       setShowKeyInput(true);
@@ -303,12 +309,12 @@ export default function AIAssistantModal({
         }
       }
 
-      // quality: 0.25 зменшує розмір фото з 12-50МП камери до ~120-250 КБ,
+      // quality: 0.15 зменшує розмір фото з 12-50МП камери до ~90-180 КБ,
       // щоб React Native OkHttp не зависав під час відправки Base64 у Gemini
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.25,
+        quality: 0.15,
         base64: true
       };
 
@@ -332,6 +338,11 @@ export default function AIAssistantModal({
         base64Data = await FileSystem.readAsStringAsync(asset.uri, {
           encoding: FileSystem.EncodingType?.Base64 || 'base64'
         });
+      }
+
+      // Видаляємо тимчасовий кеш фото
+      if (asset.uri && FileSystem) {
+        try { await FileSystem.deleteAsync(asset.uri, { idempotent: true }); } catch (e) {}
       }
 
       if (!base64Data) {
