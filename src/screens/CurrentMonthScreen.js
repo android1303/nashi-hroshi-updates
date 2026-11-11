@@ -214,18 +214,22 @@ export default function CurrentMonthScreen({
 
     try {
       if (useCamera) {
-        const camPerm = await ImagePicker.requestCameraPermissionsAsync();
+        let camPerm = await ImagePicker.getCameraPermissionsAsync();
+        if (camPerm.status !== 'granted') {
+          camPerm = await ImagePicker.requestCameraPermissionsAsync();
+        }
         if (camPerm.status !== 'granted') {
           setAiError('Надайте дозвіл на використання камери.');
           return;
         }
       }
 
+      // Прибираємо блокуючий base64: true під час запуску нативної камери,
+      // щоб системний Intent камери стартував блискавично без очікування виділення пам'яті
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.15,
-        base64: true
+        quality: 0.2
       };
 
       let res = null;
@@ -235,7 +239,10 @@ export default function CurrentMonthScreen({
         try {
           res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         } catch (galleryErr) {
-          await ImagePicker.requestMediaLibraryPermissionsAsync();
+          const libPerm = await ImagePicker.getMediaLibraryPermissionsAsync();
+          if (libPerm.status !== 'granted') {
+            await ImagePicker.requestMediaLibraryPermissionsAsync();
+          }
           res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         }
       }

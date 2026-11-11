@@ -1,4 +1,4 @@
-# Повний код проєкту «Наші Гроші» (v1.1.4)
+# Повний код проєкту «Наші Гроші» (v1.1.5)
 
 > Автоматично згенеровано: 2026-11-11 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -54,7 +54,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -78,7 +78,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 14,
+      "versionCode": 15,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -385,7 +385,12 @@ function buildSystemPrompt({ categories, incomeGroups, defaultAuthor, mode, rece
   const receiptInstruction = mode === 'photo'
     ? (receiptSplitMode === 'items'
         ? 'Це фото чека або скріншот. Розбий чек на окремі логічні позиції або групи товарів за категоріями (наприклад, окремо продукти, окремо побутова хімія чи кафе), вказуючи назву товару/магазину в полі "note".'
-        : 'Це фото чека, квитанції або скріншот банківського додатку (Monobank, Приват24 тощо). Витягни ЗАГАЛЬНУ підсумкову суму чека (СУМА РАЗОМ / ДО СПЛАТИ) як одну операцію (або кілька, якщо на скріншоті список різних транзакцій з банку). У поле "note" запиши назву магазину/закладу або короткий опис.')
+        : `Це фото чека, квитанції або скріншот екрану / шторки сповіщень телефону (Google Гаманець / Google Pay, Monobank, Приват24, Raiffeisen, Sense, ПУМБ тощо).
+   ПРАВИЛА РОЗПІЗНАВАННЯ СУМ:
+   - СУМА ПЛАТЕЖУ: Витягуй СТРОГО те число, яке безпосередньо супроводжується грошовим знаком або позначенням валюти («грн», «грн.», «₴», «UAH»). Наприклад: «224,00 грн.» -> amount: 224; «150,50 ₴» -> amount: 150.5.
+   - ЗАБОРОНА СКЛЕЮВАННЯ НОМЕРІВ ТОРГОВИХ ТОЧОК: Цифри у назвах закладів, номери терміналів або ресторанів (наприклад, «MCDONALDS 050», «АТБ-1044», «Сільпо 12», «АЗС №14») — це НОМЕР ТОРГОВОЇ ТОЧКИ, а НЕ сума! КАТЕГОРИЧНО ЗАБОРОНЕНО склеювати ці цифри з сумою платежу (приклад: для рядків «MCDONALDS 050» та «224,00 грн.» сума — це 224, а НЕ 50224!). У поле "note" запиши "McDonald's" або "McDonald's #050".
+   - СЛУЖБОВІ ДАНІ: Маски номерів карток («••7021», «*7021»), час («20 хв тому»), відсотки батареї («74%») чи час («14:08») відкидай і ніколи не додавай до суми.
+   - АНТИДУБЛЮВАННЯ: Якщо на скріншоті шторки сповіщень є кілька пуш-повідомлень про ОДНУ І ТУ САМУ оплату (наприклад, пуш від Google Гаманець «MCDONALDS 050 224,00 грн.» і нижче пуш від банку «224,00 ₴ оплата в MCDONALDS»), поверни ТІЛЬКИ ОДНУ операцію на 224 грн у категорію "Ресторани/Кафе", note: "McDonald's".`)
     : 'Якщо користувач назвав або написав кілька різних витрат чи доходів у одній фразі (наприклад: "Заправив авто на 1200 грн на ОККО і купив каву за 90 грн"), обов\'язково розділи їх на окремі елементи масиву "transactions".';
 
   return `Ти — розумний фінансовий ШІ-асистент сімейного бюджету в додатку «Наші Гроші».
@@ -1259,20 +1264,21 @@ export default function AIAssistantModal({
 
     try {
       if (useCamera) {
-        const camPerm = await ImagePicker.requestCameraPermissionsAsync();
+        let camPerm = await ImagePicker.getCameraPermissionsAsync();
+        if (camPerm.status !== 'granted') {
+          camPerm = await ImagePicker.requestCameraPermissionsAsync();
+        }
         if (camPerm.status !== 'granted') {
           setErrorMsg('Надайте дозвіл на використання камери в налаштуваннях телефону.');
           return;
         }
       }
 
-      // quality: 0.15 зменшує розмір фото з 12-50МП камери до ~90-180 КБ,
-      // щоб React Native OkHttp не зависав під час відправки Base64 у Gemini
+      // Прибираємо блокуючий base64: true під час старту камери
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.15,
-        base64: true
+        quality: 0.2
       };
 
       let res = null;
@@ -1282,7 +1288,10 @@ export default function AIAssistantModal({
         try {
           res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         } catch (galleryErr) {
-          await ImagePicker.requestMediaLibraryPermissionsAsync();
+          const libPerm = await ImagePicker.getMediaLibraryPermissionsAsync();
+          if (libPerm.status !== 'granted') {
+            await ImagePicker.requestMediaLibraryPermissionsAsync();
+          }
           res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         }
       }
@@ -1318,7 +1327,7 @@ export default function AIAssistantModal({
       }
       if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
 
-      setSelectedImageUri(asset.uri);
+      setSelectedImageUri(`data:${mimeType};base64,${base64Data}`);
       setSelectedImageBase64(base64Data);
       setSelectedImageMime(mimeType);
 
@@ -2494,18 +2503,22 @@ export default function CurrentMonthScreen({
 
     try {
       if (useCamera) {
-        const camPerm = await ImagePicker.requestCameraPermissionsAsync();
+        let camPerm = await ImagePicker.getCameraPermissionsAsync();
+        if (camPerm.status !== 'granted') {
+          camPerm = await ImagePicker.requestCameraPermissionsAsync();
+        }
         if (camPerm.status !== 'granted') {
           setAiError('Надайте дозвіл на використання камери.');
           return;
         }
       }
 
+      // Прибираємо блокуючий base64: true під час запуску нативної камери,
+      // щоб системний Intent камери стартував блискавично без очікування виділення пам'яті
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.15,
-        base64: true
+        quality: 0.2
       };
 
       let res = null;
@@ -2515,7 +2528,10 @@ export default function CurrentMonthScreen({
         try {
           res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         } catch (galleryErr) {
-          await ImagePicker.requestMediaLibraryPermissionsAsync();
+          const libPerm = await ImagePicker.getMediaLibraryPermissionsAsync();
+          if (libPerm.status !== 'granted') {
+            await ImagePicker.requestMediaLibraryPermissionsAsync();
+          }
           res = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         }
       }

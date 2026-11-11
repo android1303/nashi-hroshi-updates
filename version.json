@@ -1,5 +1,5 @@
 {
-  "version": "1.1.4",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.4/app-release.apk",
-  "releaseNotes": "v1.1.4: Перехід на офіційні моделі Google (gemini-3.5-flash-lite, gemini-3.6-flash), блокування закритих моделей 2.x для нових ключів, автоперехоплення рекомендацій Google та автоматичне динамічне перемикання моделей."
+  "version": "1.1.5",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.5/app-release.apk",
+  "releaseNotes": "v1.1.5: Виправлено розпізнавання сум у чеках та сповіщеннях (заборона склеювання номерів закладів на кшталт MCDONALDS 050 із сумою платежу), миттєвий запуск камери без затримок пам'яті."
 }

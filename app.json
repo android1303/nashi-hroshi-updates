@@ -3,7 +3,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -27,7 +27,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 14,
+      "versionCode": 15,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
