@@ -1,5 +1,5 @@
 {
-  "version": "1.1.3",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.3/app-release.apk",
-  "releaseNotes": "v1.1.3: Оптимізація та стабілізація Gemini ШІ: виправлено зависання та блокування інтерфейсу, встановлено актуальні моделі (gemini-2.5-flash, gemini-2.0-flash), обмежено кількість спроб до 2 замість 8 для запобігання вичерпання квоти (15 RPM), додано 16-секундний таймаут мережевих запитів та автоочищення кешу аудіо й фото."
+  "version": "1.1.4",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.4/app-release.apk",
+  "releaseNotes": "v1.1.4: Перехід на офіційні моделі Google (gemini-3.5-flash-lite, gemini-3.6-flash), блокування закритих моделей 2.x для нових ключів, автоперехоплення рекомендацій Google та автоматичне динамічне перемикання моделей."
 }

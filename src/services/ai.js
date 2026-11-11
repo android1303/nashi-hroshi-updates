@@ -2,13 +2,12 @@
 
 const DEFAULT_FALLBACK_GEMINI_KEY = '';
 
-// Актуальні стабільні мультимодальні моделі Google AI Studio (v1beta API)
+// Актуальні офіційні моделі Google AI Studio (v1beta API) для нових та існуючих ключів
 const PREFERRED_GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b'
+  'gemini-3.5-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.8-flash',
+  'gemini-flash-latest'
 ];
 
 let cachedWorkingModel = null;
@@ -51,7 +50,7 @@ async function discoverAvailableModels(cleanKey) {
     const data = await res.json();
     const models = Array.isArray(data?.models) ? data.models : [];
 
-    // Фільтруємо моделі, які підтримують generateContent і не є вузькоспеціалізованими (tts, image-generation, embedding)
+    // Фільтруємо моделі, які підтримують generateContent, не є спец-моделями і не закриті Google для нових ключів
     const supported = models
       .filter(m => {
         const methods = m.supportedGenerationMethods || [];
@@ -71,7 +70,10 @@ async function discoverAvailableModels(cleanKey) {
           name.includes('deep-research') ||
           name.includes('antigravity') ||
           name.includes('lyria') ||
-          name.includes('banana')
+          name.includes('banana') ||
+          name.includes('2.5-flash') ||
+          name.includes('2.5-pro') ||
+          name.includes('2.0-flash')
         ) {
           return false;
         }
@@ -79,17 +81,16 @@ async function discoverAvailableModels(cleanKey) {
       })
       .map(m => m.name.replace(/^models\//, ''));
 
-    // Сортуємо: спочатку найшвидші стабільні flash моделі
+    // Сортуємо: найвищий пріоритет офіційно рекомендованим flash-lite та flash
     supported.sort((a, b) => {
       const score = (n) => {
-        if (n === 'gemini-2.5-flash') return 120;
-        if (n === 'gemini-2.0-flash') return 110;
-        if (n === 'gemini-2.0-flash-lite') return 105;
-        if (n === 'gemini-1.5-flash') return 100;
-        if (n === 'gemini-1.5-flash-8b') return 95;
-        if (n.includes('2.5-flash')) return 90;
-        if (n.includes('2.0-flash')) return 85;
-        if (n.includes('1.5-flash')) return 80;
+        if (n === 'gemini-3.5-flash-lite') return 200;
+        if (n === 'gemini-3.6-flash') return 180;
+        if (n === 'gemini-3.8-flash') return 160;
+        if (n === 'gemini-flash-latest') return 140;
+        if (n.includes('3.5-flash')) return 120;
+        if (n.includes('3.6-flash')) return 110;
+        if (n.includes('3.8-flash')) return 100;
         if (n.includes('flash')) return 60;
         if (n.includes('pro')) return 40;
         return 10;
@@ -385,9 +386,23 @@ export async function analyzeTransactionsWithAI({
             throw new Error('Розмір файлу занадто великий для обробки. Зробіть фото ближче або оберіть файл меншого розміру.');
           }
 
-          // 4. Тимчасові помилки окремої моделі (404 чи 503) — переходимо до запасного варіанту
-          if (response.status === 404 || response.status === 503) {
+          // 4. Тимчасові помилки окремої моделі або застарілі моделі (404, 503 чи deprecated) — переходимо до запасної
+          const isDeprecatedOrUnavailable =
+            response.status === 404 ||
+            response.status === 503 ||
+            errMsgLower.includes('no longer available') ||
+            errMsgLower.includes('not available to new users') ||
+            errMsgLower.includes('deprecated') ||
+            errMsgLower.includes('not found') ||
+            errMsgLower.includes('update your code to use');
+
+          if (isDeprecatedOrUnavailable) {
             cachedWorkingModel = null;
+            // Якщо Google вказав актуальну модель у тексті помилки (наприклад: "use models/gemini-3.5-flash-lite")
+            const recMatch = errMsg.match(/models\/([a-zA-Z0-9.-]+)/);
+            if (recMatch && recMatch[1] && recMatch[1] !== modelName) {
+              suggestedReplacementModel = recMatch[1];
+            }
             lastError = new Error(errMsg);
             continue;
           }
@@ -453,13 +468,21 @@ export async function analyzeTransactionsWithAI({
     return null;
   };
 
+  let suggestedReplacementModel = null;
+
   // Спроба 1: пріоритетні моделі (максимум 2 запити)
   const firstResult = await tryGenerateWithList(modelsToTry);
   if (firstResult) return firstResult;
 
-  // Спроба 2: якщо обидві моделі повернули 404/503 — перевіряємо ListModels і пробуємо лише одну найкращу модель
+  // Спроба 2: якщо Google прямо вказав робочу модель у тексті відповіді — негайно викликаємо її
+  if (suggestedReplacementModel && !modelsToTry.includes(suggestedReplacementModel)) {
+    const suggestedResult = await tryGenerateWithList([suggestedReplacementModel]);
+    if (suggestedResult) return suggestedResult;
+  }
+
+  // Спроба 3: якщо моделі не підійшли — перевіряємо ListModels і пробуємо лише одну найкращу модель
   const discovered = await discoverAvailableModels(cleanKey);
-  const newModels = discovered.filter(m => !modelsToTry.includes(m)).slice(0, 1);
+  const newModels = discovered.filter(m => !modelsToTry.includes(m) && m !== suggestedReplacementModel).slice(0, 1);
   if (newModels.length > 0) {
     const secondResult = await tryGenerateWithList(newModels);
     if (secondResult) return secondResult;
@@ -578,7 +601,17 @@ ${JSON.stringify(compactTx)}
           throw new Error('Невірний або недійсний Gemini API ключ. Перевірте його у Налаштуваннях додатку (⚙️).');
         }
 
-        if (response.status === 404 || response.status === 503) {
+        // Тимчасові помилки окремої моделі або застарілі моделі (404, 503 чи deprecated)
+        const isDeprecatedOrUnavailable =
+          response.status === 404 ||
+          response.status === 503 ||
+          errMsgLower.includes('no longer available') ||
+          errMsgLower.includes('not available to new users') ||
+          errMsgLower.includes('deprecated') ||
+          errMsgLower.includes('not found') ||
+          errMsgLower.includes('update your code to use');
+
+        if (isDeprecatedOrUnavailable) {
           cachedWorkingModel = null;
           lastError = new Error(errMsg);
           continue;
