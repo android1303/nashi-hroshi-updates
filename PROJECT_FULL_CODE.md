@@ -2666,14 +2666,6 @@ export default function CurrentMonthScreen({
         return;
       }
 
-      let mimeType = 'image/jpeg';
-      if (asset.mimeType && asset.mimeType.includes('/')) {
-        mimeType = asset.mimeType.toLowerCase();
-      } else if (asset.uri) {
-        const u = asset.uri.toLowerCase();
-        if (u.endsWith('.png')) mimeType = 'image/png';
-        else if (u.endsWith('.webp')) mimeType = 'image/webp';
-      }
       if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
 
       setAiLoading(true);
