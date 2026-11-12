@@ -305,9 +305,13 @@ export async function analyzeTransactionsWithAI({
   const parts = [{ text: systemPrompt }];
 
   if (mode === 'voice' && audioBase64) {
+    let cleanAudioMime = audioMimeType || 'audio/m4a';
+    if (cleanAudioMime === 'audio/mp4' || cleanAudioMime.includes('3gp')) {
+      cleanAudioMime = 'audio/m4a';
+    }
     parts.push({
       inlineData: {
-        mimeType: audioMimeType,
+        mimeType: cleanAudioMime,
         data: audioBase64
       }
     });
@@ -509,7 +513,10 @@ export async function askAIAnalytics({
   categories = [],
   incomeGroups = []
 }) {
-  const effectiveAudioMime = mimeType || audioMimeType || 'audio/mp4';
+  let effectiveAudioMime = mimeType || audioMimeType || 'audio/m4a';
+  if (effectiveAudioMime === 'audio/mp4' || effectiveAudioMime.includes('3gp')) {
+    effectiveAudioMime = 'audio/m4a';
+  }
   const cleanKey = String(
     apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
   ).trim();

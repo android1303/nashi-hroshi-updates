@@ -235,9 +235,7 @@ export default function AnalyticsScreen({
           });
           try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
           const lowerUri = uri.toLowerCase();
-          const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
-            ? 'audio/3gpp'
-            : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+          const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
           await handleAskAI('', base64, detectedMime);
         } catch (readErr) {
           setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
@@ -262,8 +260,32 @@ export default function AnalyticsScreen({
         // Невелика пауза для звільнення нативного MediaRecorder на Android
         await new Promise(r => setTimeout(r, 120));
 
-        const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
-        const { recording } = await Audio.Recording.createAsync(preset);
+        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API
+        const geminiPreset = {
+          isMeteringEnabled: true,
+          android: {
+            extension: '.m4a',
+            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
+            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
+            sampleRate: 16000,
+            numberOfChannels: 1,
+            bitRate: 32000
+          },
+          ios: {
+            extension: '.m4a',
+            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
+            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
+            sampleRate: 16000,
+            numberOfChannels: 1,
+            bitRate: 32000
+          },
+          web: {
+            mimeType: 'audio/webm',
+            bitsPerSecond: 32000
+          }
+        };
+
+        const { recording } = await Audio.Recording.createAsync(geminiPreset);
 
         recordingRef.current = recording;
         setIsRecording(true);

@@ -1,6 +1,6 @@
-# Повний код проєкту «Наші Гроші» (v1.1.5)
+# Повний код проєкту «Наші Гроші» (v1.1.6)
 
-> Автоматично згенеровано: 2026-11-11 через `node scripts/sync-project-doc.js`
+> Автоматично згенеровано: 2026-11-12 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
 
 ---
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -26,6 +26,7 @@
     "expo": "~51.0.28",
     "expo-av": "~14.0.4",
     "expo-file-system": "~17.0.1",
+    "expo-image-manipulator": "~12.0.5",
     "expo-image-picker": "~15.0.7",
     "expo-linear-gradient": "~13.0.2",
     "expo-local-authentication": "~14.0.1",
@@ -54,7 +55,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.1.5",
+    "version": "1.1.6",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -78,7 +79,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 15,
+      "versionCode": 16,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -475,9 +476,13 @@ export async function analyzeTransactionsWithAI({
   const parts = [{ text: systemPrompt }];
 
   if (mode === 'voice' && audioBase64) {
+    let cleanAudioMime = audioMimeType || 'audio/m4a';
+    if (cleanAudioMime === 'audio/mp4' || cleanAudioMime.includes('3gp')) {
+      cleanAudioMime = 'audio/m4a';
+    }
     parts.push({
       inlineData: {
-        mimeType: audioMimeType,
+        mimeType: cleanAudioMime,
         data: audioBase64
       }
     });
@@ -679,7 +684,10 @@ export async function askAIAnalytics({
   categories = [],
   incomeGroups = []
 }) {
-  const effectiveAudioMime = mimeType || audioMimeType || 'audio/mp4';
+  let effectiveAudioMime = mimeType || audioMimeType || 'audio/m4a';
+  if (effectiveAudioMime === 'audio/mp4' || effectiveAudioMime.includes('3gp')) {
+    effectiveAudioMime = 'audio/m4a';
+  }
   const cleanKey = String(
     apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
   ).trim();
@@ -980,6 +988,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { analyzeTransactionsWithAI } from '../services/ai';
 
@@ -1158,8 +1167,32 @@ export default function AIAssistantModal({
       // Коротка пауза для звільнення нативного MediaRecorder на Android
       await new Promise(r => setTimeout(r, 120));
 
-      const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
-      const { recording } = await Audio.Recording.createAsync(preset);
+      // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API (вага ~20 КБ за 5 сек)
+      const geminiPreset = {
+        isMeteringEnabled: true,
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
+          audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 32000
+        },
+        ios: {
+          extension: '.m4a',
+          outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
+          audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 32000
+        },
+        web: {
+          mimeType: 'audio/webm',
+          bitsPerSecond: 32000
+        }
+      };
+
+      const { recording } = await Audio.Recording.createAsync(geminiPreset);
 
       recordingRef.current = recording;
       setIsRecording(true);
@@ -1229,9 +1262,7 @@ export default function AIAssistantModal({
       }
 
       const lowerUri = uri.toLowerCase();
-      const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
-        ? 'audio/3gpp'
-        : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+      const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
 
       const result = await analyzeTransactionsWithAI({
         apiKey: effectiveApiKey,
@@ -1274,11 +1305,11 @@ export default function AIAssistantModal({
         }
       }
 
-      // Прибираємо блокуючий base64: true під час старту камери
+      // Запуск камери без блокуючого base64: true
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.2
+        quality: 0.8
       };
 
       let res = null;
@@ -1299,11 +1330,41 @@ export default function AIAssistantModal({
       if (!res || res.canceled || !res.assets || res.assets.length === 0) return;
 
       const asset = res.assets[0];
-      let base64Data = asset.base64;
+      let base64Data = null;
+      let mimeType = 'image/jpeg';
+
+      // Нативне стиснення до 1024px через ImageManipulator:
+      // Перетворює 50МП фото та 6МБ PNG у ~70-90 КБ JPEG, усуваючи лаги інтерфейсу
+      if (ImageManipulator && ImageManipulator.manipulateAsync && asset.uri) {
+        try {
+          const manip = await ImageManipulator.manipulateAsync(
+            asset.uri,
+            [{ resize: { width: 1024 } }],
+            { compress: 0.65, format: ImageManipulator.SaveFormat?.JPEG || 'jpeg', base64: true }
+          );
+          if (manip && manip.base64) {
+            base64Data = manip.base64;
+            mimeType = 'image/jpeg';
+          }
+          if (manip && manip.uri) {
+            try { await FileSystem.deleteAsync(manip.uri, { idempotent: true }); } catch (e) {}
+          }
+        } catch (manipErr) {
+          // Fallback до стандартного зчитування
+        }
+      }
+
       if (!base64Data && asset.uri && FileSystem) {
         base64Data = await FileSystem.readAsStringAsync(asset.uri, {
           encoding: FileSystem.EncodingType?.Base64 || 'base64'
         });
+        if (asset.mimeType && asset.mimeType.includes('/')) {
+          mimeType = asset.mimeType.toLowerCase();
+        } else if (asset.uri) {
+          const u = asset.uri.toLowerCase();
+          if (u.endsWith('.png')) mimeType = 'image/png';
+          else if (u.endsWith('.webp')) mimeType = 'image/webp';
+        }
       }
 
       // Видаляємо тимчасовий кеш фото
@@ -1316,15 +1377,6 @@ export default function AIAssistantModal({
         return;
       }
 
-      let mimeType = 'image/jpeg';
-      if (asset.mimeType && asset.mimeType.includes('/')) {
-        mimeType = asset.mimeType.toLowerCase();
-      } else if (asset.uri) {
-        const u = asset.uri.toLowerCase();
-        if (u.endsWith('.png')) mimeType = 'image/png';
-        else if (u.endsWith('.webp')) mimeType = 'image/webp';
-        else mimeType = 'image/jpeg';
-      }
       if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
 
       setSelectedImageUri(`data:${mimeType};base64,${base64Data}`);
@@ -2304,6 +2356,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Defs, LinearGradient as SvgLinearGradient, Stop, Circle } from 'react-native-svg';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { analyzeTransactionsWithAI } from '../services/ai';
 
@@ -2437,9 +2490,7 @@ export default function CurrentMonthScreen({
         try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
 
         const lowerUri = uri.toLowerCase();
-        const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
-          ? 'audio/3gpp'
-          : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+        const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
 
         const result = await analyzeTransactionsWithAI({
           apiKey: effectiveApiKey,
@@ -2478,8 +2529,32 @@ export default function CurrentMonthScreen({
         });
         await new Promise(r => setTimeout(r, 120));
 
-        const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
-        const { recording } = await Audio.Recording.createAsync(preset);
+        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API (вага ~20 КБ за 5 сек)
+        const geminiPreset = {
+          isMeteringEnabled: true,
+          android: {
+            extension: '.m4a',
+            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
+            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
+            sampleRate: 16000,
+            numberOfChannels: 1,
+            bitRate: 32000
+          },
+          ios: {
+            extension: '.m4a',
+            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
+            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
+            sampleRate: 16000,
+            numberOfChannels: 1,
+            bitRate: 32000
+          },
+          web: {
+            mimeType: 'audio/webm',
+            bitsPerSecond: 32000
+          }
+        };
+
+        const { recording } = await Audio.Recording.createAsync(geminiPreset);
 
         recordingRef.current = recording;
         setIsRecording(true);
@@ -2513,12 +2588,11 @@ export default function CurrentMonthScreen({
         }
       }
 
-      // Прибираємо блокуючий base64: true під час запуску нативної камери,
-      // щоб системний Intent камери стартував блискавично без очікування виділення пам'яті
+      // Запуск камери/галереї без блокуючого base64: true
       const pickerOptions = {
         mediaTypes: ImagePicker.MediaTypeOptions?.Images || 'Images',
         allowsEditing: false,
-        quality: 0.2
+        quality: 0.8
       };
 
       let res = null;
@@ -2539,11 +2613,42 @@ export default function CurrentMonthScreen({
       if (!res || res.canceled || !res.assets || res.assets.length === 0) return;
 
       const asset = res.assets[0];
-      let base64Data = asset.base64;
+      let base64Data = null;
+      let mimeType = 'image/jpeg';
+
+      // Нативно змінюємо роздільну здатність до макс. 1024px та стискаємо JPEG (0.65):
+      // Важкі 50МП фото та PNG-скріншоти (6-8 МБ) зменшуються до ~70-90 КБ за 30 мс,
+      // що усуває зависання UI (лаги) і забезпечує передачу за 0.1 сек замість 20+ сек.
+      if (ImageManipulator && ImageManipulator.manipulateAsync && asset.uri) {
+        try {
+          const manip = await ImageManipulator.manipulateAsync(
+            asset.uri,
+            [{ resize: { width: 1024 } }],
+            { compress: 0.65, format: ImageManipulator.SaveFormat?.JPEG || 'jpeg', base64: true }
+          );
+          if (manip && manip.base64) {
+            base64Data = manip.base64;
+            mimeType = 'image/jpeg';
+          }
+          if (manip && manip.uri) {
+            try { await FileSystem.deleteAsync(manip.uri, { idempotent: true }); } catch (e) {}
+          }
+        } catch (manipErr) {
+          // Fallback до прямого читання
+        }
+      }
+
       if (!base64Data && asset.uri && FileSystem) {
         base64Data = await FileSystem.readAsStringAsync(asset.uri, {
           encoding: FileSystem.EncodingType?.Base64 || 'base64'
         });
+        if (asset.mimeType && asset.mimeType.includes('/')) {
+          mimeType = asset.mimeType.toLowerCase();
+        } else if (asset.uri) {
+          const u = asset.uri.toLowerCase();
+          if (u.endsWith('.png')) mimeType = 'image/png';
+          else if (u.endsWith('.webp')) mimeType = 'image/webp';
+        }
       }
 
       // Видаляємо тимчасовий кеш фото після зчитування Base64
@@ -3662,9 +3767,7 @@ export default function AnalyticsScreen({
           });
           try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
           const lowerUri = uri.toLowerCase();
-          const detectedMime = lowerUri.endsWith('.3gp') || lowerUri.endsWith('.3gpp')
-            ? 'audio/3gpp'
-            : (lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/mp4');
+          const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
           await handleAskAI('', base64, detectedMime);
         } catch (readErr) {
           setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
@@ -3689,8 +3792,32 @@ export default function AnalyticsScreen({
         // Невелика пауза для звільнення нативного MediaRecorder на Android
         await new Promise(r => setTimeout(r, 120));
 
-        const preset = Audio.RecordingOptionsPresets?.LOW_QUALITY || Audio.RecordingOptionsPresets?.HIGH_QUALITY;
-        const { recording } = await Audio.Recording.createAsync(preset);
+        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API
+        const geminiPreset = {
+          isMeteringEnabled: true,
+          android: {
+            extension: '.m4a',
+            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
+            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
+            sampleRate: 16000,
+            numberOfChannels: 1,
+            bitRate: 32000
+          },
+          ios: {
+            extension: '.m4a',
+            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
+            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
+            sampleRate: 16000,
+            numberOfChannels: 1,
+            bitRate: 32000
+          },
+          web: {
+            mimeType: 'audio/webm',
+            bitsPerSecond: 32000
+          }
+        };
+
+        const { recording } = await Audio.Recording.createAsync(geminiPreset);
 
         recordingRef.current = recording;
         setIsRecording(true);

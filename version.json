@@ -1,5 +1,5 @@
 {
-  "version": "1.1.5",
-  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.5/app-release.apk",
-  "releaseNotes": "v1.1.5: Виправлено розпізнавання сум у чеках та сповіщеннях (заборона склеювання номерів закладів на кшталт MCDONALDS 050 із сумою платежу), миттєвий запуск камери без затримок пам'яті."
+  "version": "1.1.6",
+  "apkUrl": "https://github.com/android1303/nashi-hroshi-updates/releases/download/v1.1.6/app-release.apk",
+  "releaseNotes": "v1.1.6: Виправлено голосовий ввід (перехід на нативний AAC/M4A 16 кГц, сумісний з Gemini), додано нативне автостиснення фото чеків та PNG-скріншотів до 1024px через ImageManipulator (усунено лаги та зависання завантаження), швидкий запуск камери."
 }
