@@ -17,7 +17,7 @@ import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
-import { analyzeTransactionsWithAI } from '../services/ai';
+import { analyzeTransactionsWithAI, getGeminiRecordingPreset } from '../services/ai';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 // Плашки жорстко займають ~38-40% висоти екрану при початковому завантаженні
@@ -55,6 +55,8 @@ export default function CurrentMonthScreen({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const recordingRef = useRef(null);
   const timerRef = useRef(null);
+  const voiceBusyRef = useRef(false);
+  const imageBusyRef = useRef(false);
 
   const [showInlineText, setShowInlineText] = useState(false);
   const [inlineText, setInlineText] = useState('');
@@ -89,9 +91,16 @@ export default function CurrentMonthScreen({
     const rec = recordingRef.current;
     recordingRef.current = null;
     if (rec) {
+      let leftoverUri = null;
+      try {
+        leftoverUri = rec.getURI();
+      } catch (e) {}
       try {
         await rec.stopAndUnloadAsync();
       } catch (e) {}
+      if (leftoverUri && FileSystem) {
+        try { await FileSystem.deleteAsync(leftoverUri, { idempotent: true }); } catch (e) {}
+      }
     }
     await resetAudioMode();
   };
@@ -103,139 +112,144 @@ export default function CurrentMonthScreen({
   }, []);
 
   const handleInlineVoiceToggle = async () => {
+    if (voiceBusyRef.current) return;
+    if (!isRecording && aiLoading) return;
+
+    voiceBusyRef.current = true;
     setAiError('');
-    if (!Audio) {
-      setAiError('Модуль запису звуку (expo-av) недоступний.');
-      return;
-    }
 
-    if (isRecording) {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+    try {
+      if (!Audio) {
+        setAiError('Модуль запису звуку (expo-av) недоступний.');
+        return;
       }
-      setIsRecording(false);
-      const rec = recordingRef.current;
-      recordingRef.current = null;
-      let uri = null;
-      try {
-        if (rec) {
-          uri = rec.getURI();
-          await rec.stopAndUnloadAsync();
-          if (!uri) {
+
+      if (isRecording) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        setIsRecording(false);
+        const rec = recordingRef.current;
+        recordingRef.current = null;
+
+        let uri = null;
+        let stopSucceeded = false;
+        try {
+          if (rec) {
             uri = rec.getURI();
+            await rec.stopAndUnloadAsync();
+            stopSucceeded = true;
+            uri = rec.getURI() || uri;
           }
+        } catch (e) {
+          stopSucceeded = false;
+        } finally {
+          await resetAudioMode();
         }
-      } catch (e) {
-        setAiError('Помилка зупинки запису: ' + (e?.message || ''));
-      } finally {
-        await resetAudioMode();
-      }
 
-      if (!uri) {
-        setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
-        return;
-      }
-      if (!effectiveApiKey) {
-        setAiError('Спочатку вкажіть ключ Gemini API у Налаштуваннях (⚙️).');
-        return;
-      }
-
-      setAiLoading(true);
-      try {
-        const base64Audio = await FileSystem.readAsStringAsync(uri, {
-          encoding: FileSystem.EncodingType?.Base64 || 'base64'
-        });
-        try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
-
-        const lowerUri = uri.toLowerCase();
-        const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
-
-        const result = await analyzeTransactionsWithAI({
-          apiKey: effectiveApiKey,
-          mode: 'voice',
-          audioBase64: base64Audio,
-          audioMimeType: detectedMime,
-          categories,
-          incomeGroups,
-          defaultAuthor
-        });
-
-        setAiTranscript(result.transcript || '');
-        setParsedItems(result.transactions || []);
-        if (!result.transactions || result.transactions.length === 0) {
-          setAiError('Не знайдено суми у записі. Скажіть чіткіше, напр.: «АТБ 450 гривень».');
-        }
-      } catch (err) {
-        setAiError(err?.message || 'Помилка розпізнавання голосу.');
-      } finally {
-        setAiLoading(false);
-      }
-    } else {
-      await stopAndCleanupRecording();
-      try {
-        const perm = await Audio.requestPermissionsAsync();
-        if (perm.status !== 'granted') {
-          setAiError('Надайте дозвіл на використання мікрофона.');
+        if (!stopSucceeded) {
+          if (uri && FileSystem) {
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+          }
+          setAiError('Запис занадто короткий або перервався. Говоріть щонайменше 1 секунду і спробуйте знову.');
           return;
         }
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false
-        });
-        await new Promise(r => setTimeout(r, 120));
 
-        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API (вага ~20 КБ за 5 сек)
-        const geminiPreset = {
-          isMeteringEnabled: true,
-          android: {
-            extension: '.m4a',
-            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
-            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          ios: {
-            extension: '.m4a',
-            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
-            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          web: {
-            mimeType: 'audio/webm',
-            bitsPerSecond: 32000
+        if (!uri) {
+          setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+          return;
+        }
+
+        if (!effectiveApiKey) {
+          if (FileSystem) {
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
           }
-        };
+          setAiError('Спочатку вкажіть ключ Gemini API у Налаштуваннях (⚙️).');
+          return;
+        }
 
-        const { recording } = await Audio.Recording.createAsync(geminiPreset);
+        setAiLoading(true);
+        try {
+          const base64Audio = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType?.Base64 || 'base64'
+          });
+          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
 
-        recordingRef.current = recording;
-        setIsRecording(true);
-        setRecordingSeconds(0);
-        timerRef.current = setInterval(() => {
-          setRecordingSeconds(prev => prev + 1);
-        }, 1000);
-      } catch (err) {
+          if (!base64Audio || base64Audio.length < 100) {
+            setAiError('Запис порожній або занадто короткий. Скажіть витрату чіткіше.');
+            return;
+          }
+
+          const lowerUri = uri.toLowerCase();
+          const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
+
+          const result = await analyzeTransactionsWithAI({
+            apiKey: effectiveApiKey,
+            mode: 'voice',
+            audioBase64: base64Audio,
+            audioMimeType: detectedMime,
+            categories,
+            incomeGroups,
+            defaultAuthor
+          });
+
+          setAiTranscript(result.transcript || '');
+          setParsedItems(result.transactions || []);
+          if (!result.transactions || result.transactions.length === 0) {
+            setAiError('Не знайдено суми у записі. Скажіть чіткіше, напр.: «АТБ 450 гривень».');
+          }
+        } catch (err) {
+          setAiError(err?.message || 'Помилка розпізнавання голосу.');
+        } finally {
+          setAiLoading(false);
+        }
+      } else {
         await stopAndCleanupRecording();
-        setAiError('Не вдалося почати запис: ' + (err?.message || ''));
+        try {
+          const perm = await Audio.requestPermissionsAsync();
+          if (perm.status !== 'granted') {
+            setAiError('Надайте дозвіл на використання мікрофона.');
+            return;
+          }
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false
+          });
+          await new Promise(r => setTimeout(r, 120));
+
+          const { recording } = await Audio.Recording.createAsync(getGeminiRecordingPreset(Audio));
+
+          recordingRef.current = recording;
+          setIsRecording(true);
+          setRecordingSeconds(0);
+          timerRef.current = setInterval(() => {
+            setRecordingSeconds(prev => prev + 1);
+          }, 1000);
+        } catch (err) {
+          await stopAndCleanupRecording();
+          setAiError('Не вдалося почати запис: ' + (err?.message || ''));
+        }
       }
+    } finally {
+      voiceBusyRef.current = false;
     }
   };
 
   const handleInlinePickImage = async (useCamera = false) => {
+    if (imageBusyRef.current || aiLoading) return;
+    imageBusyRef.current = true;
     setAiError('');
-    if (!ImagePicker) {
-      setAiError('Модуль камери/галереї недоступний.');
-      return;
-    }
 
     try {
+      if (!ImagePicker) {
+        setAiError('Модуль камери/галереї недоступний.');
+        return;
+      }
+
       if (useCamera) {
         let camPerm = await ImagePicker.getCameraPermissionsAsync();
         if (camPerm.status !== 'granted') {
@@ -271,25 +285,28 @@ export default function CurrentMonthScreen({
 
       if (!res || res.canceled || !res.assets || res.assets.length === 0) return;
 
+      // Одразу показуємо спінер, поки йде стиснення зображення і читання Base64
+      setAiLoading(true);
+
       const asset = res.assets[0];
       let base64Data = null;
       let mimeType = 'image/jpeg';
 
-      // Нативно змінюємо роздільну здатність до макс. 1024px та стискаємо JPEG (0.65):
-      // Важкі 50МП фото та PNG-скріншоти (6-8 МБ) зменшуються до ~70-90 КБ за 30 мс,
-      // що усуває зависання UI (лаги) і забезпечує передачу за 0.1 сек замість 20+ сек.
+      // Нативно зменшуємо тільки великі зображення (>1024px) та стискаємо JPEG (0.65):
+      // 50МП фото та важкі PNG-скріншоти зменшуються до ~70-90 КБ без зайвого розтягування малих скріншотів.
       if (ImageManipulator && ImageManipulator.manipulateAsync && asset.uri) {
         try {
+          const actions = !asset.width || asset.width > 1024 ? [{ resize: { width: 1024 } }] : [];
           const manip = await ImageManipulator.manipulateAsync(
             asset.uri,
-            [{ resize: { width: 1024 } }],
+            actions,
             { compress: 0.65, format: ImageManipulator.SaveFormat?.JPEG || 'jpeg', base64: true }
           );
           if (manip && manip.base64) {
             base64Data = manip.base64;
             mimeType = 'image/jpeg';
           }
-          if (manip && manip.uri) {
+          if (manip && manip.uri && FileSystem) {
             try { await FileSystem.deleteAsync(manip.uri, { idempotent: true }); } catch (e) {}
           }
         } catch (manipErr) {
@@ -327,7 +344,6 @@ export default function CurrentMonthScreen({
 
       if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
 
-      setAiLoading(true);
       const result = await analyzeTransactionsWithAI({
         apiKey: effectiveApiKey,
         mode: 'photo',
@@ -348,6 +364,7 @@ export default function CurrentMonthScreen({
       setAiError(err?.message || 'Помилка обробки фото.');
     } finally {
       setAiLoading(false);
+      imageBusyRef.current = false;
     }
   };
 

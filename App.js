@@ -274,11 +274,15 @@ export default function App() {
     await updateSettings({ familyMembers: updated });
   };
 
-  // Читання непідтверджених оплат Google Wallet
+  // Читання непідтверджених оплат Google Wallet (без зайвих перерендерів, якщо список не змінився)
   const refreshPendingWalletPayments = async () => {
     try {
       const list = await getPendingWalletPayments();
-      setPendingWalletList(list);
+      setPendingWalletList(prev => {
+        if (prev.length === 0 && list.length === 0) return prev;
+        if (prev.length === list.length && JSON.stringify(prev) === JSON.stringify(list)) return prev;
+        return list;
+      });
     } catch (e) {}
   };
 

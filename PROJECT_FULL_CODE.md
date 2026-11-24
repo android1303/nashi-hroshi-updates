@@ -1,6 +1,6 @@
-# Повний код проєкту «Наші Гроші» (v1.1.6)
+# Повний код проєкту «Наші Гроші» (v1.1.7)
 
-> Автоматично згенеровано: 2026-11-12 через `node scripts/sync-project-doc.js`
+> Автоматично згенеровано: 2026-11-24 через `node scripts/sync-project-doc.js`
 > Цей файл містить актуальний вихідний код усіх модулів додатку (включно з Firebase синхронізацією та ШІ-асистентом голосу і фото чеків).
 
 ---
@@ -11,7 +11,7 @@
 ```json
 {
   "name": "nashi-hroshi",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Мобільний додаток для обліку сімейного бюджету «Наші Гроші»",
   "main": "index.js",
   "scripts": {
@@ -55,7 +55,7 @@
     "name": "Наші Гроші",
     "slug": "nashi-hroshi",
     "scheme": "nashihroshi",
-    "version": "1.1.6",
+    "version": "1.1.7",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -79,7 +79,7 @@
         "backgroundColor": "#141218"
       },
       "package": "com.android1303.nashihroshi",
-      "versionCode": 16,
+      "versionCode": 17,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -169,14 +169,15 @@ export default app;
 **Файл:** `src/services/ai.js`
 
 ```javascript
-// Сервіс ШІ-асистента (Google Gemini Multimodal API) для розпізнавання голосу, фото чеків та тексту
+// Сервіс ШІ-асистента (Google Gemini Multimodal API) для розпізнавання голосу, фото чеків, тексту та аналітики
 
 const DEFAULT_FALLBACK_GEMINI_KEY = '';
 
-// Актуальні офіційні моделі Google AI Studio (v1beta API) для нових та існуючих ключів
+// Актуальні офіційні безкоштовні моделі Google AI Studio (v1beta API) станом на листопад 2026
+// (gemini-3.6-flash вилучено, оскільки Google заблокував її для нових/неактивних проєктів 19.11.2026)
 const PREFERRED_GEMINI_MODELS = [
   'gemini-3.5-flash-lite',
-  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
   'gemini-3.8-flash',
   'gemini-flash-latest'
 ];
@@ -184,9 +185,118 @@ const PREFERRED_GEMINI_MODELS = [
 let cachedWorkingModel = null;
 
 /**
+ * Універсальний стабільний пресет запису голосу AAC/M4A для Android, iOS та Web.
+ * 44100 Hz / 64 kbps mono стабільно підтримується усіма апаратними енкодерами Android
+ * без помилок MediaRecorder.stop() (~40 КБ за 5 сек аудіо).
+ */
+export function getGeminiRecordingPreset(Audio) {
+  return {
+    isMeteringEnabled: false,
+    android: {
+      extension: '.m4a',
+      outputFormat: Audio?.AndroidOutputFormat?.MPEG_4 ?? 2,
+      audioEncoder: Audio?.AndroidAudioEncoder?.AAC ?? 3,
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 64000
+    },
+    ios: {
+      extension: '.m4a',
+      outputFormat: Audio?.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
+      audioQuality: Audio?.IOSAudioQuality?.MEDIUM ?? 64,
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 64000
+    },
+    web: {
+      mimeType: 'audio/webm',
+      bitsPerSecond: 64000
+    }
+  };
+}
+
+function normalizeAudioMime(mime) {
+  let clean = String(mime || 'audio/m4a').trim().toLowerCase();
+  if (!clean || clean === 'audio/mp4' || clean.includes('3gp')) {
+    clean = 'audio/m4a';
+  }
+  return clean;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Підбір оптимального thinkingConfig для моделей Gemini 3.x / 4.x
+ * щоб уникати зайвих 15-20 сек роздумів на простих задачах витягання JSON.
+ */
+function getThinkingConfigForModel(modelName) {
+  const n = String(modelName || '').toLowerCase();
+  if (n.includes('3.5-flash-lite') || n.includes('3.1-flash-lite')) {
+    return { thinkingLevel: 'minimal' };
+  }
+  if (n.includes('3.8-flash') || n.includes('3.5-flash') || n.includes('gemini-4') || n.includes('3.1-pro')) {
+    return { thinkingLevel: 'low' };
+  }
+  return null;
+}
+
+/**
+ * Безпечне витягання тексту відповіді з candidates, ігноруючи службові thought-частини Gemini 3.x
+ */
+function extractTextFromGeminiResponse(resData) {
+  const parts = resData?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts) || parts.length === 0) return '';
+
+  const nonThoughtText = parts
+    .filter(p => !p.thought && typeof p.text === 'string' && p.text.trim().length > 0)
+    .map(p => p.text)
+    .join('\n')
+    .trim();
+
+  if (nonThoughtText) return nonThoughtText;
+
+  return parts
+    .filter(p => typeof p.text === 'string' && p.text.trim().length > 0)
+    .map(p => p.text)
+    .join('\n')
+    .trim();
+}
+
+/**
+ * Надійний парсер JSON-відповіді (знімає markdown-обгортки та витягує JSON-блок при наявності зайвого тексту)
+ */
+function parseGeminiJsonText(rawText) {
+  const cleaned = String(rawText || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  if (!cleaned) {
+    throw new Error('ШІ повернув порожню відповідь.');
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (parseErr) {
+    const objMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      return JSON.parse(objMatch[0]);
+    }
+    const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (arrMatch) {
+      return JSON.parse(arrMatch[0]);
+    }
+    throw new Error('Не вдалося розібрати відповідь ШІ.');
+  }
+}
+
+/**
  * fetch з таймаутом через AbortController для захисту від нескінченного зависання на Android
  */
-async function fetchWithTimeout(url, options = {}, timeoutMs = 16000) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = 22000) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
     try {
@@ -202,7 +312,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 16000) {
     return response;
   } catch (err) {
     if (err.name === 'AbortError' || (err.message && err.message.toLowerCase().includes('abort'))) {
-      throw new Error(`Час очікування Gemini API вичерпано (${Math.round(timeoutMs / 1000)} сек). Перевірте інтернет-з'єднання і спробуйте знову.`);
+      const timeoutErr = new Error(`Час очікування Gemini API вичерпано (${Math.round(timeoutMs / 1000)} сек). Перевірте інтернет-з'єднання і спробуйте знову.`);
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
     }
     throw err;
   } finally {
@@ -218,7 +330,8 @@ async function discoverAvailableModels(cleanKey) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
     const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) return [];
-    const data = await res.json();
+    const rawBody = await res.text();
+    const data = rawBody ? JSON.parse(rawBody) : null;
     const models = Array.isArray(data?.models) ? data.models : [];
 
     // Фільтруємо моделі, які підтримують generateContent, не є спец-моделями і не закриті Google для нових ключів
@@ -242,6 +355,7 @@ async function discoverAvailableModels(cleanKey) {
           name.includes('antigravity') ||
           name.includes('lyria') ||
           name.includes('banana') ||
+          name.includes('3.6-flash') ||
           name.includes('2.5-flash') ||
           name.includes('2.5-pro') ||
           name.includes('2.0-flash')
@@ -252,16 +366,16 @@ async function discoverAvailableModels(cleanKey) {
       })
       .map(m => m.name.replace(/^models\//, ''));
 
-    // Сортуємо: найвищий пріоритет офіційно рекомендованим flash-lite та flash
+    // Сортуємо: найвищий пріоритет офіційно рекомендованим безкоштовним flash-lite та flash
     supported.sort((a, b) => {
       const score = (n) => {
-        if (n === 'gemini-3.5-flash-lite') return 200;
-        if (n === 'gemini-3.6-flash') return 180;
-        if (n === 'gemini-3.8-flash') return 160;
-        if (n === 'gemini-flash-latest') return 140;
-        if (n.includes('3.5-flash')) return 120;
-        if (n.includes('3.6-flash')) return 110;
-        if (n.includes('3.8-flash')) return 100;
+        if (n === 'gemini-3.5-flash-lite') return 220;
+        if (n === 'gemini-3.1-flash-lite') return 200;
+        if (n === 'gemini-3.8-flash') return 180;
+        if (n === 'gemini-flash-latest') return 150;
+        if (n.includes('3.5-flash')) return 130;
+        if (n.includes('3.1-flash-lite')) return 120;
+        if (n.includes('3.8-flash')) return 110;
         if (n.includes('flash')) return 60;
         if (n.includes('pro')) return 40;
         return 10;
@@ -273,6 +387,208 @@ async function discoverAvailableModels(cleanKey) {
   } catch (e) {
     return [];
   }
+}
+
+/**
+ * Єдине відмовостійке ядро виклику Gemini API з поверненням розпарсеного JSON:
+ * - Автоматичний короткий retry (1.2 сек) при тимчасовому 503/502/504
+ * - Плавний перехід на резервну безкоштовну модель при 429 (ліміти окремі на модель!), 503, 404 або таймауті
+ * - Фільтрація thought-блоків Gemini 3.x та безпечний парсинг відповіді
+ */
+async function callGeminiJSON({ cleanKey, parts, timeoutMs = 22000 }) {
+  const candidateModels = cachedWorkingModel
+    ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
+    : [...PREFERRED_GEMINI_MODELS];
+  const initialModels = candidateModels.slice(0, 3);
+
+  let lastError = null;
+  let suggestedReplacementModel = null;
+  let sawRateLimit = false;
+  let sawTimeout = false;
+
+  const tryGenerateWithList = async (modelList) => {
+    for (const modelName of modelList) {
+      const generationConfig = {
+        responseMimeType: 'application/json'
+      };
+      const thinkingConfig = getThinkingConfigForModel(modelName);
+      if (thinkingConfig) {
+        generationConfig.thinkingConfig = thinkingConfig;
+      }
+
+      const payloadStr = JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig
+      });
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+
+      // До 2 спроб на тій самій моделі, якщо Google тимчасово віддав 503/502/504
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const response = await fetchWithTimeout(
+            url,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payloadStr
+            },
+            timeoutMs
+          );
+
+          const rawBody = await response.text();
+          let resData = null;
+          try {
+            resData = rawBody ? JSON.parse(rawBody) : null;
+          } catch (jsonBodyErr) {
+            resData = null;
+          }
+
+          if (!response.ok) {
+            const errMsg = resData?.error?.message || `HTTP ${response.status}`;
+            const errMsgLower = errMsg.toLowerCase();
+
+            // 1. Невірний або недійсний API ключ — фатальна помилка, миттєво зупиняємось
+            if (
+              response.status === 401 ||
+              response.status === 403 ||
+              (response.status === 400 &&
+                (errMsgLower.includes('api key') ||
+                  errMsgLower.includes('api_key') ||
+                  errMsgLower.includes('key not valid') ||
+                  errMsgLower.includes('unauthenticated')))
+            ) {
+              cachedWorkingModel = null;
+              const authErr = new Error('Невірний або недійсний Gemini API ключ. Перевірте його у Налаштуваннях додатку (⚙️).');
+              authErr.isFatal = true;
+              throw authErr;
+            }
+
+            // 2. Занадто великий розмір файлу — фатальна помилка
+            if (
+              response.status === 400 &&
+              (errMsgLower.includes('payload') ||
+                errMsgLower.includes('size') ||
+                errMsgLower.includes('too large'))
+            ) {
+              const sizeErr = new Error('Розмір файлу занадто великий для обробки. Зробіть фото ближче або оберіть менший файл.');
+              sizeErr.isFatal = true;
+              throw sizeErr;
+            }
+
+            // 3. Тимчасове перевантаження серверів Google (500/502/503/504) — 1 повтор через 1.2 сек, далі запасна модель
+            if (response.status === 503 || response.status === 502 || response.status === 504 || response.status === 500) {
+              lastError = new Error('Сервери Google Gemini тимчасово перевантажені. Спробуйте ще раз.');
+              if (attempt === 0) {
+                await sleep(1200);
+                continue;
+              }
+              cachedWorkingModel = null;
+              break;
+            }
+
+            // 4. Ліміт конкретної моделі (429 / quota) — переходимо на іншу безкоштовну модель (у кожної свій ліміт!)
+            if (response.status === 429 || errMsgLower.includes('quota') || errMsgLower.includes('resource_exhausted')) {
+              sawRateLimit = true;
+              cachedWorkingModel = null;
+              lastError = new Error('Перевищено ліміт запитів Gemini API (безкоштовний тариф). Зачекайте 10–15 секунд і спробуйте знову.');
+              break;
+            }
+
+            // 5. Модель недоступна / застаріла (404 / deprecated) — шукаємо заміну
+            const isDeprecatedOrUnavailable =
+              response.status === 404 ||
+              errMsgLower.includes('no longer available') ||
+              errMsgLower.includes('not available to new users') ||
+              errMsgLower.includes('deprecated') ||
+              errMsgLower.includes('not found') ||
+              errMsgLower.includes('update your code to use');
+
+            if (isDeprecatedOrUnavailable) {
+              cachedWorkingModel = null;
+              const recMatch = errMsg.match(/models\/([a-zA-Z0-9.-]+)/);
+              if (recMatch && recMatch[1] && recMatch[1] !== modelName) {
+                suggestedReplacementModel = recMatch[1];
+              }
+              lastError = new Error(errMsg);
+              break;
+            }
+
+            // Інша помилка конкретної моделі (наприклад, непідтриманий thinkingLevel) — переходимо до наступної
+            lastError = new Error(`Помилка Gemini API: ${errMsg}`);
+            break;
+          }
+
+          if (!resData) {
+            lastError = new Error('Сервер Gemini повернув порожню або пошкоджену відповідь.');
+            if (attempt === 0) {
+              await sleep(1000);
+              continue;
+            }
+            break;
+          }
+
+          const rawText = extractTextFromGeminiResponse(resData);
+          if (!rawText) {
+            lastError = new Error('ШІ повернув порожню відповідь.');
+            break;
+          }
+
+          const parsed = parseGeminiJsonText(rawText);
+          cachedWorkingModel = modelName;
+          return parsed;
+        } catch (err) {
+          if (err.isFatal) {
+            throw err;
+          }
+          lastError = err;
+          if (err.isTimeout) {
+            sawTimeout = true;
+            cachedWorkingModel = null;
+            // Переходимо до наступної швидкої моделі замість миттєвої відмови
+            break;
+          }
+          // Мережева помилка (наприклад, короткий обрив зв'язку) — 1 повтор на тій самій моделі
+          if (attempt === 0 && (err.message?.includes('Network request failed') || err.name === 'TypeError')) {
+            await sleep(1000);
+            continue;
+          }
+          break;
+        }
+      }
+    }
+    return null;
+  };
+
+  // Спроба 1: актуальний ланцюжок безкоштовних моделей (до 3 моделей)
+  const firstResult = await tryGenerateWithList(initialModels);
+  if (firstResult) return firstResult;
+
+  // Спроба 2: якщо Google вказав рекомендовану заміну в тексті помилки
+  if (suggestedReplacementModel && !initialModels.includes(suggestedReplacementModel)) {
+    const suggestedResult = await tryGenerateWithList([suggestedReplacementModel]);
+    if (suggestedResult) return suggestedResult;
+  }
+
+  // Спроба 3: динамічний пошук доступних моделей через ListModels API
+  const discovered = await discoverAvailableModels(cleanKey);
+  const newModels = discovered
+    .filter(m => !initialModels.includes(m) && m !== suggestedReplacementModel)
+    .slice(0, 1);
+
+  if (newModels.length > 0) {
+    const thirdResult = await tryGenerateWithList(newModels);
+    if (thirdResult) return thirdResult;
+  }
+
+  if (sawRateLimit) {
+    throw new Error('Перевищено ліміт запитів Gemini API (безкоштовний тариф). Будь ласка, зачекайте 10–15 секунд і спробуйте знову.');
+  }
+  if (sawTimeout) {
+    throw new Error(`Час очікування Gemini API вичерпано (${Math.round(timeoutMs / 1000)} сек). Перевірте інтернет-з'єднання і спробуйте знову.`);
+  }
+
+  throw lastError || new Error('Не вдалося з’єднатися з Gemini AI. Перевірте інтернет-з’єднання і спробуйте знову.');
 }
 
 /**
@@ -443,14 +759,14 @@ ${JSON.stringify(activeInc, null, 2)}
 }
 
 /**
- * Основна функція виклику Gemini API з автовизначенням доступної моделі (gemini-3.5-flash-lite / gemini-3.8-flash)
+ * Основна функція виклику Gemini API для розпізнавання голосу, фото чеків/скріншотів і тексту
  */
 export async function analyzeTransactionsWithAI({
   apiKey,
   mode = 'voice', // 'voice' | 'photo' | 'text'
   receiptSplitMode = 'total', // 'total' | 'items'
   audioBase64,
-  audioMimeType = 'audio/mp4',
+  audioMimeType = 'audio/m4a',
   imageBase64,
   imageMimeType = 'image/jpeg',
   textInput = '',
@@ -476,13 +792,9 @@ export async function analyzeTransactionsWithAI({
   const parts = [{ text: systemPrompt }];
 
   if (mode === 'voice' && audioBase64) {
-    let cleanAudioMime = audioMimeType || 'audio/m4a';
-    if (cleanAudioMime === 'audio/mp4' || cleanAudioMime.includes('3gp')) {
-      cleanAudioMime = 'audio/m4a';
-    }
     parts.push({
       inlineData: {
-        mimeType: cleanAudioMime,
+        mimeType: normalizeAudioMime(audioMimeType),
         data: audioBase64
       }
     });
@@ -492,7 +804,7 @@ export async function analyzeTransactionsWithAI({
   } else if (mode === 'photo' && imageBase64) {
     parts.push({
       inlineData: {
-        mimeType: imageMimeType,
+        mimeType: imageMimeType || 'image/jpeg',
         data: imageBase64
       }
     });
@@ -509,166 +821,24 @@ export async function analyzeTransactionsWithAI({
     throw new Error('Немає даних для аналізу (запишіть голос, додайте фото або введіть текст).');
   }
 
-  // Спочатку пробуємо перевірені швидкі моделі (не більше 2, щоб уникнути вичерпання квоти)
-  const candidateModels = cachedWorkingModel
-    ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
-    : [...PREFERRED_GEMINI_MODELS];
-  const modelsToTry = candidateModels.slice(0, 2);
+  const parsed = await callGeminiJSON({
+    cleanKey,
+    parts,
+    timeoutMs: 22000
+  });
 
-  let lastError = null;
+  const rawList = Array.isArray(parsed)
+    ? parsed
+    : (Array.isArray(parsed?.transactions) ? parsed.transactions : []);
 
-  const tryGenerateWithList = async (modelList) => {
-    for (const modelName of modelList) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-        const response = await fetchWithTimeout(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts }],
-            generationConfig: {
-              temperature: 0.15,
-              responseMimeType: 'application/json'
-            }
-          })
-        }, 16000);
+  const normalizedTransactions = rawList
+    .map(item => normalizeTransactionItem(item, categories, incomeGroups, defaultAuthor))
+    .filter(item => item.amount > 0);
 
-        const resData = await response.json();
-
-        if (!response.ok) {
-          const errMsg = resData?.error?.message || `HTTP ${response.status}`;
-          const errMsgLower = errMsg.toLowerCase();
-
-          // 1. Перевищення ліміту безкоштовного тарифу (15 RPM) — миттєво зупиняємо цикл
-          if (response.status === 429 || errMsgLower.includes('quota') || errMsgLower.includes('resource_exhausted')) {
-            cachedWorkingModel = null;
-            throw new Error('Перевищено хвилинний ліміт запитів Gemini API (15 запитів/хв для безкоштовного тарифу). Будь ласка, зачекайте 10–15 секунд і спробуйте знову.');
-          }
-
-          // 2. Невірний або прострочений API ключ — миттєво зупиняємось
-          if (
-            response.status === 401 ||
-            response.status === 403 ||
-            (response.status === 400 && (errMsgLower.includes('api key') || errMsgLower.includes('api_key') || errMsgLower.includes('key not valid') || errMsgLower.includes('unauthenticated')))
-          ) {
-            cachedWorkingModel = null;
-            throw new Error('Невірний або недійсний Gemini API ключ. Перевірте його у Налаштуваннях додатку (⚙️).');
-          }
-
-          // 3. Занадто великий розмір зображення
-          if (
-            response.status === 400 &&
-            (errMsgLower.includes('payload') ||
-              errMsgLower.includes('size') ||
-              errMsgLower.includes('limit') ||
-              errMsgLower.includes('too large'))
-          ) {
-            throw new Error('Розмір файлу занадто великий для обробки. Зробіть фото ближче або оберіть файл меншого розміру.');
-          }
-
-          // 4. Тимчасові помилки окремої моделі або застарілі моделі (404, 503 чи deprecated) — переходимо до запасної
-          const isDeprecatedOrUnavailable =
-            response.status === 404 ||
-            response.status === 503 ||
-            errMsgLower.includes('no longer available') ||
-            errMsgLower.includes('not available to new users') ||
-            errMsgLower.includes('deprecated') ||
-            errMsgLower.includes('not found') ||
-            errMsgLower.includes('update your code to use');
-
-          if (isDeprecatedOrUnavailable) {
-            cachedWorkingModel = null;
-            // Якщо Google вказав актуальну модель у тексті помилки (наприклад: "use models/gemini-3.5-flash-lite")
-            const recMatch = errMsg.match(/models\/([a-zA-Z0-9.-]+)/);
-            if (recMatch && recMatch[1] && recMatch[1] !== modelName) {
-              suggestedReplacementModel = recMatch[1];
-            }
-            lastError = new Error(errMsg);
-            continue;
-          }
-
-          lastError = new Error(`Помилка Gemini API: ${errMsg}`);
-          continue;
-        }
-
-        const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        if (!rawText) {
-          lastError = new Error('ШІ повернув порожню відповідь.');
-          continue;
-        }
-
-        cachedWorkingModel = modelName;
-
-        const cleanedJsonStr = rawText
-          .replace(/^```json\s*/i, '')
-          .replace(/^```\s*/i, '')
-          .replace(/\s*```$/i, '')
-          .trim();
-
-        let parsed;
-        try {
-          parsed = JSON.parse(cleanedJsonStr);
-        } catch (parseErr) {
-          const match = cleanedJsonStr.match(/\{[\s\S]*\}/);
-          if (match) {
-            parsed = JSON.parse(match[0]);
-          } else {
-            throw new Error('Не вдалося розібрати відповідь ШІ.');
-          }
-        }
-
-        const rawList = Array.isArray(parsed)
-          ? parsed
-          : (Array.isArray(parsed.transactions) ? parsed.transactions : []);
-
-        const normalizedTransactions = rawList
-          .map(item => normalizeTransactionItem(item, categories, incomeGroups, defaultAuthor))
-          .filter(item => item.amount > 0);
-
-        return {
-          transcript: parsed.transcript || '',
-          transactions: normalizedTransactions
-        };
-      } catch (err) {
-        lastError = err;
-        // Фатальні помилки прокидаємо одразу без марних повторів
-        if (
-          err.message && (
-            err.message.includes('хвилинний ліміт') ||
-            err.message.includes('API ключ') ||
-            err.message === 'MISSING_API_KEY' ||
-            err.message.includes('Час очікування') ||
-            err.message.includes('Розмір файлу')
-          )
-        ) {
-          throw err;
-        }
-      }
-    }
-    return null;
+  return {
+    transcript: parsed?.transcript || '',
+    transactions: normalizedTransactions
   };
-
-  let suggestedReplacementModel = null;
-
-  // Спроба 1: пріоритетні моделі (максимум 2 запити)
-  const firstResult = await tryGenerateWithList(modelsToTry);
-  if (firstResult) return firstResult;
-
-  // Спроба 2: якщо Google прямо вказав робочу модель у тексті відповіді — негайно викликаємо її
-  if (suggestedReplacementModel && !modelsToTry.includes(suggestedReplacementModel)) {
-    const suggestedResult = await tryGenerateWithList([suggestedReplacementModel]);
-    if (suggestedResult) return suggestedResult;
-  }
-
-  // Спроба 3: якщо моделі не підійшли — перевіряємо ListModels і пробуємо лише одну найкращу модель
-  const discovered = await discoverAvailableModels(cleanKey);
-  const newModels = discovered.filter(m => !modelsToTry.includes(m) && m !== suggestedReplacementModel).slice(0, 1);
-  if (newModels.length > 0) {
-    const secondResult = await tryGenerateWithList(newModels);
-    if (secondResult) return secondResult;
-  }
-
-  throw lastError || new Error('Не вдалося з’єднатися з Gemini AI. Перевірте з’єднання.');
 }
 
 /**
@@ -678,16 +848,13 @@ export async function askAIAnalytics({
   apiKey,
   question = '',
   audioBase64 = null,
-  audioMimeType = 'audio/mp4',
+  audioMimeType = 'audio/m4a',
   mimeType,
   transactions = [],
   categories = [],
   incomeGroups = []
 }) {
-  let effectiveAudioMime = mimeType || audioMimeType || 'audio/m4a';
-  if (effectiveAudioMime === 'audio/mp4' || effectiveAudioMime.includes('3gp')) {
-    effectiveAudioMime = 'audio/m4a';
-  }
+  const effectiveAudioMime = normalizeAudioMime(mimeType || audioMimeType);
   const cleanKey = String(
     apiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || DEFAULT_FALLBACK_GEMINI_KEY || ''
   ).trim();
@@ -743,93 +910,11 @@ ${JSON.stringify(compactTx)}
     parts.push({ text: `Запитання користувача: "${question.trim()}"` });
   }
 
-  const candidateModels = cachedWorkingModel
-    ? [cachedWorkingModel, ...PREFERRED_GEMINI_MODELS.filter(m => m !== cachedWorkingModel)]
-    : [...PREFERRED_GEMINI_MODELS];
-  const modelsToTry = candidateModels.slice(0, 2);
-
-  let lastError = null;
-
-  for (const modelName of modelsToTry) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-      const response = await fetchWithTimeout(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: 'application/json'
-          }
-        })
-      }, 16000);
-
-      const resData = await response.json();
-      if (!response.ok) {
-        const errMsg = resData?.error?.message || `HTTP ${response.status}`;
-        const errMsgLower = errMsg.toLowerCase();
-
-        if (response.status === 429 || errMsgLower.includes('quota') || errMsgLower.includes('resource_exhausted')) {
-          cachedWorkingModel = null;
-          throw new Error('Перевищено хвилинний ліміт запитів Gemini API (15 запитів/хв для безкоштовного тарифу). Будь ласка, зачекайте 10–15 секунд і спробуйте знову.');
-        }
-
-        if (
-          response.status === 401 ||
-          response.status === 403 ||
-          (response.status === 400 && (errMsgLower.includes('api key') || errMsgLower.includes('api_key') || errMsgLower.includes('key not valid') || errMsgLower.includes('unauthenticated')))
-        ) {
-          cachedWorkingModel = null;
-          throw new Error('Невірний або недійсний Gemini API ключ. Перевірте його у Налаштуваннях додатку (⚙️).');
-        }
-
-        // Тимчасові помилки окремої моделі або застарілі моделі (404, 503 чи deprecated)
-        const isDeprecatedOrUnavailable =
-          response.status === 404 ||
-          response.status === 503 ||
-          errMsgLower.includes('no longer available') ||
-          errMsgLower.includes('not available to new users') ||
-          errMsgLower.includes('deprecated') ||
-          errMsgLower.includes('not found') ||
-          errMsgLower.includes('update your code to use');
-
-        if (isDeprecatedOrUnavailable) {
-          cachedWorkingModel = null;
-          lastError = new Error(errMsg);
-          continue;
-        }
-
-        throw new Error(errMsg);
-      }
-
-      const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      if (!rawText) continue;
-
-      cachedWorkingModel = modelName;
-      const cleaned = rawText
-        .replace(/^```json\s*/i, '')
-        .replace(/^```\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-
-      return JSON.parse(cleaned);
-    } catch (err) {
-      lastError = err;
-      if (
-        err.message && (
-          err.message.includes('хвилинний ліміт') ||
-          err.message.includes('API ключ') ||
-          err.message === 'MISSING_API_KEY' ||
-          err.message.includes('Час очікування')
-        )
-      ) {
-        throw err;
-      }
-    }
-  }
-
-  throw lastError || new Error('Не вдалося сформувати ШІ-звіт.');
+  return await callGeminiJSON({
+    cleanKey,
+    parts,
+    timeoutMs: 25000
+  });
 }
 ```
 
@@ -990,7 +1075,7 @@ import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
-import { analyzeTransactionsWithAI } from '../services/ai';
+import { analyzeTransactionsWithAI, getGeminiRecordingPreset } from '../services/ai';
 
 export default function AIAssistantModal({
   visible,
@@ -1017,6 +1102,9 @@ export default function AIAssistantModal({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const recordingRef = useRef(null);
   const timerRef = useRef(null);
+  const voiceBusyRef = useRef(false);
+  const imageBusyRef = useRef(false);
+  const wasVisibleRef = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   // Стан фото
@@ -1040,12 +1128,14 @@ export default function AIAssistantModal({
 
   const effectiveApiKey = (geminiApiKey || tempApiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '').trim();
 
-  // Синхронізуємо вкладку при відкритті модалки (і очищаємо мікрофон при закритті)
+  // Синхронізуємо вкладку при відкритті модалки (очищаємо мікрофон тільки якщо модалка дійсно була відкрита)
   useEffect(() => {
     if (visible) {
+      wasVisibleRef.current = true;
       setActiveTab(initialTab || 'voice');
       setErrorMsg('');
-    } else {
+    } else if (wasVisibleRef.current) {
+      wasVisibleRef.current = false;
       stopAndCleanupRecording();
     }
   }, [visible, initialTab]);
@@ -1070,7 +1160,9 @@ export default function AIAssistantModal({
   // Очищаємо мікрофон при розмонтуванні
   useEffect(() => {
     return () => {
-      stopAndCleanupRecording();
+      if (recordingRef.current) {
+        stopAndCleanupRecording();
+      }
     };
   }, []);
 
@@ -1132,24 +1224,34 @@ export default function AIAssistantModal({
     const rec = recordingRef.current;
     recordingRef.current = null;
     if (rec) {
+      let leftoverUri = null;
+      try {
+        leftoverUri = rec.getURI();
+      } catch (e) {}
       try {
         await rec.stopAndUnloadAsync();
       } catch (e) {}
+      if (leftoverUri && FileSystem) {
+        try { await FileSystem.deleteAsync(leftoverUri, { idempotent: true }); } catch (e) {}
+      }
+      await resetAudioMode();
     }
-    await resetAudioMode();
   };
 
   const startVoiceRecording = async () => {
+    if (voiceBusyRef.current || isAnalyzing) return;
+    voiceBusyRef.current = true;
     setErrorMsg('');
-    if (!Audio) {
-      setErrorMsg('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
-      return;
-    }
-
-    // Завжди очищаємо попередній запис перед створенням нового
-    await stopAndCleanupRecording();
 
     try {
+      if (!Audio) {
+        setErrorMsg('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
+        return;
+      }
+
+      // Завжди очищаємо попередній запис перед створенням нового
+      await stopAndCleanupRecording();
+
       const perm = await Audio.requestPermissionsAsync();
       if (perm.status !== 'granted') {
         setErrorMsg('Надайте дозвіл на використання мікрофона в налаштуваннях телефону.');
@@ -1167,32 +1269,7 @@ export default function AIAssistantModal({
       // Коротка пауза для звільнення нативного MediaRecorder на Android
       await new Promise(r => setTimeout(r, 120));
 
-      // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API (вага ~20 КБ за 5 сек)
-      const geminiPreset = {
-        isMeteringEnabled: true,
-        android: {
-          extension: '.m4a',
-          outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
-          audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 32000
-        },
-        ios: {
-          extension: '.m4a',
-          outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
-          audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 32000
-        },
-        web: {
-          mimeType: 'audio/webm',
-          bitsPerSecond: 32000
-        }
-      };
-
-      const { recording } = await Audio.Recording.createAsync(geminiPreset);
+      const { recording } = await Audio.Recording.createAsync(getGeminiRecordingPreset(Audio));
 
       recordingRef.current = recording;
       setIsRecording(true);
@@ -1203,97 +1280,120 @@ export default function AIAssistantModal({
     } catch (err) {
       await stopAndCleanupRecording();
       setErrorMsg('Не вдалося почати запис голосу: ' + (err.message || ''));
+    } finally {
+      voiceBusyRef.current = false;
     }
   };
 
   const finishVoiceRecordingAndAnalyze = async () => {
+    if (voiceBusyRef.current) return;
     const rec = recordingRef.current;
     if (!rec) return;
 
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    setIsRecording(false);
-    recordingRef.current = null;
-
-    let uri = null;
-    try {
-      uri = rec.getURI();
-      await rec.stopAndUnloadAsync();
-      if (!uri) {
-        uri = rec.getURI();
-      }
-    } catch (err) {
-      setErrorMsg('Не вдалося зупинити запис: ' + (err.message || ''));
-    } finally {
-      await resetAudioMode();
-    }
-
-    if (!uri) {
-      setErrorMsg('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
-      return;
-    }
-
-    if (!effectiveApiKey) {
-      setShowKeyInput(true);
-      setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setErrorMsg('');
+    voiceBusyRef.current = true;
 
     try {
-      if (!FileSystem) {
-        throw new Error('Модуль читання файлів недоступний.');
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
-      const base64Audio = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType?.Base64 || 'base64'
-      });
+      setIsRecording(false);
+      recordingRef.current = null;
 
-      // Очищаємо тимчасовий файл у кеші, щоб наступні записи стартували миттєво
+      let uri = null;
+      let stopSucceeded = false;
       try {
-        await FileSystem.deleteAsync(uri, { idempotent: true });
-      } catch (e) {}
-
-      if (!base64Audio || base64Audio.length < 50) {
-        throw new Error('Запис порожній або занадто короткий. Скажіть витрату чіткіше.');
+        uri = rec.getURI();
+        await rec.stopAndUnloadAsync();
+        stopSucceeded = true;
+        uri = rec.getURI() || uri;
+      } catch (err) {
+        stopSucceeded = false;
+      } finally {
+        await resetAudioMode();
       }
 
-      const lowerUri = uri.toLowerCase();
-      const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
-
-      const result = await analyzeTransactionsWithAI({
-        apiKey: effectiveApiKey,
-        mode: 'voice',
-        audioBase64: base64Audio,
-        audioMimeType: detectedMime,
-        categories,
-        incomeGroups,
-        defaultAuthor
-      });
-
-      setTranscript(result.transcript || '');
-      setParsedItems(result.transactions || []);
-      if (!result.transactions || result.transactions.length === 0) {
-        setErrorMsg('ШІ не знайшов суми витрат у записі. Спробуйте сказати чіткіше, наприклад: «Продукти АТБ 450 гривень».');
+      if (!stopSucceeded) {
+        if (uri && FileSystem) {
+          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+        }
+        setErrorMsg('Запис занадто короткий або перервався. Говоріть щонайменше 1 секунду і спробуйте знову.');
+        return;
       }
-    } catch (err) {
-      setErrorMsg(err.message || 'Помилка розпізнавання голосу.');
+
+      if (!uri) {
+        setErrorMsg('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+        return;
+      }
+
+      if (!effectiveApiKey) {
+        if (FileSystem) {
+          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+        }
+        setShowKeyInput(true);
+        setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
+        return;
+      }
+
+      setIsAnalyzing(true);
+      setErrorMsg('');
+
+      try {
+        if (!FileSystem) {
+          throw new Error('Модуль читання файлів недоступний.');
+        }
+        const base64Audio = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType?.Base64 || 'base64'
+        });
+
+        // Очищаємо тимчасовий файл у кеші, щоб наступні записи стартували миттєво
+        try {
+          await FileSystem.deleteAsync(uri, { idempotent: true });
+        } catch (e) {}
+
+        if (!base64Audio || base64Audio.length < 100) {
+          throw new Error('Запис порожній або занадто короткий. Скажіть витрату чіткіше.');
+        }
+
+        const lowerUri = uri.toLowerCase();
+        const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
+
+        const result = await analyzeTransactionsWithAI({
+          apiKey: effectiveApiKey,
+          mode: 'voice',
+          audioBase64: base64Audio,
+          audioMimeType: detectedMime,
+          categories,
+          incomeGroups,
+          defaultAuthor
+        });
+
+        setTranscript(result.transcript || '');
+        setParsedItems(result.transactions || []);
+        if (!result.transactions || result.transactions.length === 0) {
+          setErrorMsg('ШІ не знайшов суми витрат у записі. Спробуйте сказати чіткіше, наприклад: «Продукти АТБ 450 гривень».');
+        }
+      } catch (err) {
+        setErrorMsg(err.message || 'Помилка розпізнавання голосу.');
+      } finally {
+        setIsAnalyzing(false);
+      }
     } finally {
-      setIsAnalyzing(false);
+      voiceBusyRef.current = false;
     }
   };
 
   const handlePickImage = async (useCamera = false) => {
+    if (imageBusyRef.current || isAnalyzing) return;
+    imageBusyRef.current = true;
     setErrorMsg('');
-    if (!ImagePicker) {
-      setErrorMsg('Модуль камери/галереї (expo-image-picker) недоступний.');
-      return;
-    }
 
     try {
+      if (!ImagePicker) {
+        setErrorMsg('Модуль камери/галереї (expo-image-picker) недоступний.');
+        return;
+      }
+
       if (useCamera) {
         let camPerm = await ImagePicker.getCameraPermissionsAsync();
         if (camPerm.status !== 'granted') {
@@ -1329,24 +1429,26 @@ export default function AIAssistantModal({
 
       if (!res || res.canceled || !res.assets || res.assets.length === 0) return;
 
+      setIsAnalyzing(true);
+
       const asset = res.assets[0];
       let base64Data = null;
       let mimeType = 'image/jpeg';
 
-      // Нативне стиснення до 1024px через ImageManipulator:
-      // Перетворює 50МП фото та 6МБ PNG у ~70-90 КБ JPEG, усуваючи лаги інтерфейсу
+      // Нативне стиснення великих фото (>1024px) через ImageManipulator
       if (ImageManipulator && ImageManipulator.manipulateAsync && asset.uri) {
         try {
+          const actions = !asset.width || asset.width > 1024 ? [{ resize: { width: 1024 } }] : [];
           const manip = await ImageManipulator.manipulateAsync(
             asset.uri,
-            [{ resize: { width: 1024 } }],
+            actions,
             { compress: 0.65, format: ImageManipulator.SaveFormat?.JPEG || 'jpeg', base64: true }
           );
           if (manip && manip.base64) {
             base64Data = manip.base64;
             mimeType = 'image/jpeg';
           }
-          if (manip && manip.uri) {
+          if (manip && manip.uri && FileSystem) {
             try { await FileSystem.deleteAsync(manip.uri, { idempotent: true }); } catch (e) {}
           }
         } catch (manipErr) {
@@ -1374,6 +1476,7 @@ export default function AIAssistantModal({
 
       if (!base64Data) {
         setErrorMsg('Не вдалося отримати дані зображення.');
+        setIsAnalyzing(false);
         return;
       }
 
@@ -1386,6 +1489,7 @@ export default function AIAssistantModal({
       if (!effectiveApiKey) {
         setShowKeyInput(true);
         setErrorMsg('Спочатку вкажіть безкоштовний ключ Gemini API вище.');
+        setIsAnalyzing(false);
         return;
       }
 
@@ -1394,6 +1498,8 @@ export default function AIAssistantModal({
     } catch (err) {
       setErrorMsg('Помилка завантаження фото: ' + (err.message || ''));
       setIsAnalyzing(false);
+    } finally {
+      imageBusyRef.current = false;
     }
   };
 
@@ -2358,7 +2464,7 @@ import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
-import { analyzeTransactionsWithAI } from '../services/ai';
+import { analyzeTransactionsWithAI, getGeminiRecordingPreset } from '../services/ai';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 // Плашки жорстко займають ~38-40% висоти екрану при початковому завантаженні
@@ -2396,6 +2502,8 @@ export default function CurrentMonthScreen({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const recordingRef = useRef(null);
   const timerRef = useRef(null);
+  const voiceBusyRef = useRef(false);
+  const imageBusyRef = useRef(false);
 
   const [showInlineText, setShowInlineText] = useState(false);
   const [inlineText, setInlineText] = useState('');
@@ -2430,9 +2538,16 @@ export default function CurrentMonthScreen({
     const rec = recordingRef.current;
     recordingRef.current = null;
     if (rec) {
+      let leftoverUri = null;
+      try {
+        leftoverUri = rec.getURI();
+      } catch (e) {}
       try {
         await rec.stopAndUnloadAsync();
       } catch (e) {}
+      if (leftoverUri && FileSystem) {
+        try { await FileSystem.deleteAsync(leftoverUri, { idempotent: true }); } catch (e) {}
+      }
     }
     await resetAudioMode();
   };
@@ -2444,139 +2559,144 @@ export default function CurrentMonthScreen({
   }, []);
 
   const handleInlineVoiceToggle = async () => {
+    if (voiceBusyRef.current) return;
+    if (!isRecording && aiLoading) return;
+
+    voiceBusyRef.current = true;
     setAiError('');
-    if (!Audio) {
-      setAiError('Модуль запису звуку (expo-av) недоступний.');
-      return;
-    }
 
-    if (isRecording) {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+    try {
+      if (!Audio) {
+        setAiError('Модуль запису звуку (expo-av) недоступний.');
+        return;
       }
-      setIsRecording(false);
-      const rec = recordingRef.current;
-      recordingRef.current = null;
-      let uri = null;
-      try {
-        if (rec) {
-          uri = rec.getURI();
-          await rec.stopAndUnloadAsync();
-          if (!uri) {
+
+      if (isRecording) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        setIsRecording(false);
+        const rec = recordingRef.current;
+        recordingRef.current = null;
+
+        let uri = null;
+        let stopSucceeded = false;
+        try {
+          if (rec) {
             uri = rec.getURI();
+            await rec.stopAndUnloadAsync();
+            stopSucceeded = true;
+            uri = rec.getURI() || uri;
           }
+        } catch (e) {
+          stopSucceeded = false;
+        } finally {
+          await resetAudioMode();
         }
-      } catch (e) {
-        setAiError('Помилка зупинки запису: ' + (e?.message || ''));
-      } finally {
-        await resetAudioMode();
-      }
 
-      if (!uri) {
-        setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
-        return;
-      }
-      if (!effectiveApiKey) {
-        setAiError('Спочатку вкажіть ключ Gemini API у Налаштуваннях (⚙️).');
-        return;
-      }
-
-      setAiLoading(true);
-      try {
-        const base64Audio = await FileSystem.readAsStringAsync(uri, {
-          encoding: FileSystem.EncodingType?.Base64 || 'base64'
-        });
-        try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
-
-        const lowerUri = uri.toLowerCase();
-        const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
-
-        const result = await analyzeTransactionsWithAI({
-          apiKey: effectiveApiKey,
-          mode: 'voice',
-          audioBase64: base64Audio,
-          audioMimeType: detectedMime,
-          categories,
-          incomeGroups,
-          defaultAuthor
-        });
-
-        setAiTranscript(result.transcript || '');
-        setParsedItems(result.transactions || []);
-        if (!result.transactions || result.transactions.length === 0) {
-          setAiError('Не знайдено суми у записі. Скажіть чіткіше, напр.: «АТБ 450 гривень».');
-        }
-      } catch (err) {
-        setAiError(err?.message || 'Помилка розпізнавання голосу.');
-      } finally {
-        setAiLoading(false);
-      }
-    } else {
-      await stopAndCleanupRecording();
-      try {
-        const perm = await Audio.requestPermissionsAsync();
-        if (perm.status !== 'granted') {
-          setAiError('Надайте дозвіл на використання мікрофона.');
+        if (!stopSucceeded) {
+          if (uri && FileSystem) {
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+          }
+          setAiError('Запис занадто короткий або перервався. Говоріть щонайменше 1 секунду і спробуйте знову.');
           return;
         }
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false
-        });
-        await new Promise(r => setTimeout(r, 120));
 
-        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API (вага ~20 КБ за 5 сек)
-        const geminiPreset = {
-          isMeteringEnabled: true,
-          android: {
-            extension: '.m4a',
-            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
-            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          ios: {
-            extension: '.m4a',
-            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
-            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          web: {
-            mimeType: 'audio/webm',
-            bitsPerSecond: 32000
+        if (!uri) {
+          setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+          return;
+        }
+
+        if (!effectiveApiKey) {
+          if (FileSystem) {
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
           }
-        };
+          setAiError('Спочатку вкажіть ключ Gemini API у Налаштуваннях (⚙️).');
+          return;
+        }
 
-        const { recording } = await Audio.Recording.createAsync(geminiPreset);
+        setAiLoading(true);
+        try {
+          const base64Audio = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType?.Base64 || 'base64'
+          });
+          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
 
-        recordingRef.current = recording;
-        setIsRecording(true);
-        setRecordingSeconds(0);
-        timerRef.current = setInterval(() => {
-          setRecordingSeconds(prev => prev + 1);
-        }, 1000);
-      } catch (err) {
+          if (!base64Audio || base64Audio.length < 100) {
+            setAiError('Запис порожній або занадто короткий. Скажіть витрату чіткіше.');
+            return;
+          }
+
+          const lowerUri = uri.toLowerCase();
+          const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
+
+          const result = await analyzeTransactionsWithAI({
+            apiKey: effectiveApiKey,
+            mode: 'voice',
+            audioBase64: base64Audio,
+            audioMimeType: detectedMime,
+            categories,
+            incomeGroups,
+            defaultAuthor
+          });
+
+          setAiTranscript(result.transcript || '');
+          setParsedItems(result.transactions || []);
+          if (!result.transactions || result.transactions.length === 0) {
+            setAiError('Не знайдено суми у записі. Скажіть чіткіше, напр.: «АТБ 450 гривень».');
+          }
+        } catch (err) {
+          setAiError(err?.message || 'Помилка розпізнавання голосу.');
+        } finally {
+          setAiLoading(false);
+        }
+      } else {
         await stopAndCleanupRecording();
-        setAiError('Не вдалося почати запис: ' + (err?.message || ''));
+        try {
+          const perm = await Audio.requestPermissionsAsync();
+          if (perm.status !== 'granted') {
+            setAiError('Надайте дозвіл на використання мікрофона.');
+            return;
+          }
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false
+          });
+          await new Promise(r => setTimeout(r, 120));
+
+          const { recording } = await Audio.Recording.createAsync(getGeminiRecordingPreset(Audio));
+
+          recordingRef.current = recording;
+          setIsRecording(true);
+          setRecordingSeconds(0);
+          timerRef.current = setInterval(() => {
+            setRecordingSeconds(prev => prev + 1);
+          }, 1000);
+        } catch (err) {
+          await stopAndCleanupRecording();
+          setAiError('Не вдалося почати запис: ' + (err?.message || ''));
+        }
       }
+    } finally {
+      voiceBusyRef.current = false;
     }
   };
 
   const handleInlinePickImage = async (useCamera = false) => {
+    if (imageBusyRef.current || aiLoading) return;
+    imageBusyRef.current = true;
     setAiError('');
-    if (!ImagePicker) {
-      setAiError('Модуль камери/галереї недоступний.');
-      return;
-    }
 
     try {
+      if (!ImagePicker) {
+        setAiError('Модуль камери/галереї недоступний.');
+        return;
+      }
+
       if (useCamera) {
         let camPerm = await ImagePicker.getCameraPermissionsAsync();
         if (camPerm.status !== 'granted') {
@@ -2612,25 +2732,28 @@ export default function CurrentMonthScreen({
 
       if (!res || res.canceled || !res.assets || res.assets.length === 0) return;
 
+      // Одразу показуємо спінер, поки йде стиснення зображення і читання Base64
+      setAiLoading(true);
+
       const asset = res.assets[0];
       let base64Data = null;
       let mimeType = 'image/jpeg';
 
-      // Нативно змінюємо роздільну здатність до макс. 1024px та стискаємо JPEG (0.65):
-      // Важкі 50МП фото та PNG-скріншоти (6-8 МБ) зменшуються до ~70-90 КБ за 30 мс,
-      // що усуває зависання UI (лаги) і забезпечує передачу за 0.1 сек замість 20+ сек.
+      // Нативно зменшуємо тільки великі зображення (>1024px) та стискаємо JPEG (0.65):
+      // 50МП фото та важкі PNG-скріншоти зменшуються до ~70-90 КБ без зайвого розтягування малих скріншотів.
       if (ImageManipulator && ImageManipulator.manipulateAsync && asset.uri) {
         try {
+          const actions = !asset.width || asset.width > 1024 ? [{ resize: { width: 1024 } }] : [];
           const manip = await ImageManipulator.manipulateAsync(
             asset.uri,
-            [{ resize: { width: 1024 } }],
+            actions,
             { compress: 0.65, format: ImageManipulator.SaveFormat?.JPEG || 'jpeg', base64: true }
           );
           if (manip && manip.base64) {
             base64Data = manip.base64;
             mimeType = 'image/jpeg';
           }
-          if (manip && manip.uri) {
+          if (manip && manip.uri && FileSystem) {
             try { await FileSystem.deleteAsync(manip.uri, { idempotent: true }); } catch (e) {}
           }
         } catch (manipErr) {
@@ -2668,7 +2791,6 @@ export default function CurrentMonthScreen({
 
       if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
 
-      setAiLoading(true);
       const result = await analyzeTransactionsWithAI({
         apiKey: effectiveApiKey,
         mode: 'photo',
@@ -2689,6 +2811,7 @@ export default function CurrentMonthScreen({
       setAiError(err?.message || 'Помилка обробки фото.');
     } finally {
       setAiLoading(false);
+      imageBusyRef.current = false;
     }
   };
 
@@ -3525,7 +3648,7 @@ const styles = StyleSheet.create({
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { askAIAnalytics } from '../services/ai';
+import { askAIAnalytics, getGeminiRecordingPreset } from '../services/ai';
 
 let Audio = null;
 try { Audio = require('expo-av').Audio; } catch (e) {}
@@ -3595,6 +3718,7 @@ export default function AnalyticsScreen({
   const [aiReport, setAiReport] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const recordingRef = useRef(null);
+  const voiceBusyRef = useRef(false);
 
   // Фільтрація транзакцій за вибраним роком (або всіма) та глобальним фільтром автора
   const filteredTransactions = useMemo(() => {
@@ -3677,9 +3801,16 @@ export default function AnalyticsScreen({
     const rec = recordingRef.current;
     recordingRef.current = null;
     if (rec) {
+      let leftoverUri = null;
+      try {
+        leftoverUri = rec.getURI();
+      } catch (e) {}
       try {
         await rec.stopAndUnloadAsync();
       } catch (e) {}
+      if (leftoverUri && FileSystem) {
+        try { await FileSystem.deleteAsync(leftoverUri, { idempotent: true }); } catch (e) {}
+      }
     }
     await resetAudioMode();
   };
@@ -3691,7 +3822,7 @@ export default function AnalyticsScreen({
   }, []);
 
   // Запит до ШІ-Аналітика
-  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/mp4') => {
+  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/m4a') => {
     const q = customQuestion !== null ? customQuestion : questionInput.trim();
     if (!q && !audioBase64) return;
 
@@ -3723,101 +3854,96 @@ export default function AnalyticsScreen({
 
   // Запис голосу через expo-av
   const handleToggleVoice = async () => {
-    if (!Audio) {
-      setAiError('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
-      return;
-    }
+    if (voiceBusyRef.current) return;
+    if (!isRecording && aiLoading) return;
 
-    if (isRecording) {
-      setIsRecording(false);
-      const rec = recordingRef.current;
-      recordingRef.current = null;
-      let uri = null;
-      try {
-        if (rec) {
-          uri = rec.getURI();
-          await rec.stopAndUnloadAsync();
-          if (!uri) {
-            uri = rec.getURI();
-          }
-        }
-      } catch (e) {
-        setAiError('Помилка зупинки запису: ' + (e?.message || ''));
-      } finally {
-        await resetAudioMode();
-      }
-
-      if (!uri) {
-        setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+    voiceBusyRef.current = true;
+    try {
+      if (!Audio) {
+        setAiError('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
         return;
       }
 
-      if (uri && FileSystem) {
+      if (isRecording) {
+        setIsRecording(false);
+        const rec = recordingRef.current;
+        recordingRef.current = null;
+        let uri = null;
+        let stopSucceeded = false;
         try {
-          const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType?.Base64 || 'base64'
-          });
-          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
-          const lowerUri = uri.toLowerCase();
-          const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
-          await handleAskAI('', base64, detectedMime);
-        } catch (readErr) {
-          setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
+          if (rec) {
+            uri = rec.getURI();
+            await rec.stopAndUnloadAsync();
+            stopSucceeded = true;
+            uri = rec.getURI() || uri;
+          }
+        } catch (e) {
+          stopSucceeded = false;
+        } finally {
+          await resetAudioMode();
         }
-      }
-    } else {
-      await stopAndCleanupRecording();
-      try {
-        setAiError('');
-        const perm = await Audio.requestPermissionsAsync();
-        if (perm.status !== 'granted') {
-          setAiError('Немає дозволу на використання мікрофона.');
+
+        if (!stopSucceeded) {
+          if (uri && FileSystem) {
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+          }
+          setAiError('Запис занадто короткий або перервався. Говоріть щонайменше 1 секунду і спробуйте знову.');
           return;
         }
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false
-        });
-        // Невелика пауза для звільнення нативного MediaRecorder на Android
-        await new Promise(r => setTimeout(r, 120));
 
-        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API
-        const geminiPreset = {
-          isMeteringEnabled: true,
-          android: {
-            extension: '.m4a',
-            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
-            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          ios: {
-            extension: '.m4a',
-            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
-            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          web: {
-            mimeType: 'audio/webm',
-            bitsPerSecond: 32000
+        if (!uri) {
+          setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+          return;
+        }
+
+        if (uri && FileSystem) {
+          try {
+            const base64 = await FileSystem.readAsStringAsync(uri, {
+              encoding: FileSystem.EncodingType?.Base64 || 'base64'
+            });
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+            if (!base64 || base64.length < 100) {
+              setAiError('Запис порожній або занадто короткий. Спробуйте ще раз.');
+              return;
+            }
+            const lowerUri = uri.toLowerCase();
+            const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
+            await handleAskAI('', base64, detectedMime);
+          } catch (readErr) {
+            setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
           }
-        };
-
-        const { recording } = await Audio.Recording.createAsync(geminiPreset);
-
-        recordingRef.current = recording;
-        setIsRecording(true);
-      } catch (e) {
+        }
+      } else {
         await stopAndCleanupRecording();
-        setAiError('Не вдалося почати запис: ' + (e?.message || ''));
-        setIsRecording(false);
+        try {
+          setAiError('');
+          const perm = await Audio.requestPermissionsAsync();
+          if (perm.status !== 'granted') {
+            setAiError('Немає дозволу на використання мікрофона.');
+            return;
+          }
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false
+          });
+          // Невелика пауза для звільнення нативного MediaRecorder на Android
+          await new Promise(r => setTimeout(r, 120));
+
+          const { recording } = await Audio.Recording.createAsync(getGeminiRecordingPreset(Audio));
+
+          recordingRef.current = recording;
+          setIsRecording(true);
+        } catch (e) {
+          await stopAndCleanupRecording();
+          setAiError('Не вдалося почати запис: ' + (e?.message || ''));
+          setIsRecording(false);
+        }
       }
+    } finally {
+      voiceBusyRef.current = false;
     }
   };
 
@@ -5037,11 +5163,15 @@ export default function App() {
     await updateSettings({ familyMembers: updated });
   };
 
-  // Читання непідтверджених оплат Google Wallet
+  // Читання непідтверджених оплат Google Wallet (без зайвих перерендерів, якщо список не змінився)
   const refreshPendingWalletPayments = async () => {
     try {
       const list = await getPendingWalletPayments();
-      setPendingWalletList(list);
+      setPendingWalletList(prev => {
+        if (prev.length === 0 && list.length === 0) return prev;
+        if (prev.length === list.length && JSON.stringify(prev) === JSON.stringify(list)) return prev;
+        return list;
+      });
     } catch (e) {}
   };
 

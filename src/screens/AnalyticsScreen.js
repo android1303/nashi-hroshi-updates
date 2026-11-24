@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { askAIAnalytics } from '../services/ai';
+import { askAIAnalytics, getGeminiRecordingPreset } from '../services/ai';
 
 let Audio = null;
 try { Audio = require('expo-av').Audio; } catch (e) {}
@@ -71,6 +71,7 @@ export default function AnalyticsScreen({
   const [aiReport, setAiReport] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const recordingRef = useRef(null);
+  const voiceBusyRef = useRef(false);
 
   // Фільтрація транзакцій за вибраним роком (або всіма) та глобальним фільтром автора
   const filteredTransactions = useMemo(() => {
@@ -153,9 +154,16 @@ export default function AnalyticsScreen({
     const rec = recordingRef.current;
     recordingRef.current = null;
     if (rec) {
+      let leftoverUri = null;
+      try {
+        leftoverUri = rec.getURI();
+      } catch (e) {}
       try {
         await rec.stopAndUnloadAsync();
       } catch (e) {}
+      if (leftoverUri && FileSystem) {
+        try { await FileSystem.deleteAsync(leftoverUri, { idempotent: true }); } catch (e) {}
+      }
     }
     await resetAudioMode();
   };
@@ -167,7 +175,7 @@ export default function AnalyticsScreen({
   }, []);
 
   // Запит до ШІ-Аналітика
-  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/mp4') => {
+  const handleAskAI = async (customQuestion = null, audioBase64 = null, mimeType = 'audio/m4a') => {
     const q = customQuestion !== null ? customQuestion : questionInput.trim();
     if (!q && !audioBase64) return;
 
@@ -199,101 +207,96 @@ export default function AnalyticsScreen({
 
   // Запис голосу через expo-av
   const handleToggleVoice = async () => {
-    if (!Audio) {
-      setAiError('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
-      return;
-    }
+    if (voiceBusyRef.current) return;
+    if (!isRecording && aiLoading) return;
 
-    if (isRecording) {
-      setIsRecording(false);
-      const rec = recordingRef.current;
-      recordingRef.current = null;
-      let uri = null;
-      try {
-        if (rec) {
-          uri = rec.getURI();
-          await rec.stopAndUnloadAsync();
-          if (!uri) {
-            uri = rec.getURI();
-          }
-        }
-      } catch (e) {
-        setAiError('Помилка зупинки запису: ' + (e?.message || ''));
-      } finally {
-        await resetAudioMode();
-      }
-
-      if (!uri) {
-        setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+    voiceBusyRef.current = true;
+    try {
+      if (!Audio) {
+        setAiError('Модуль запису звуку (expo-av) недоступний на цьому пристрої.');
         return;
       }
 
-      if (uri && FileSystem) {
+      if (isRecording) {
+        setIsRecording(false);
+        const rec = recordingRef.current;
+        recordingRef.current = null;
+        let uri = null;
+        let stopSucceeded = false;
         try {
-          const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType?.Base64 || 'base64'
-          });
-          try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
-          const lowerUri = uri.toLowerCase();
-          const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
-          await handleAskAI('', base64, detectedMime);
-        } catch (readErr) {
-          setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
+          if (rec) {
+            uri = rec.getURI();
+            await rec.stopAndUnloadAsync();
+            stopSucceeded = true;
+            uri = rec.getURI() || uri;
+          }
+        } catch (e) {
+          stopSucceeded = false;
+        } finally {
+          await resetAudioMode();
         }
-      }
-    } else {
-      await stopAndCleanupRecording();
-      try {
-        setAiError('');
-        const perm = await Audio.requestPermissionsAsync();
-        if (perm.status !== 'granted') {
-          setAiError('Немає дозволу на використання мікрофона.');
+
+        if (!stopSucceeded) {
+          if (uri && FileSystem) {
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+          }
+          setAiError('Запис занадто короткий або перервався. Говоріть щонайменше 1 секунду і спробуйте знову.');
           return;
         }
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false
-        });
-        // Невелика пауза для звільнення нативного MediaRecorder на Android
-        await new Promise(r => setTimeout(r, 120));
 
-        // Пресет AAC/M4A 16 кГц, сумісний з Google Gemini API
-        const geminiPreset = {
-          isMeteringEnabled: true,
-          android: {
-            extension: '.m4a',
-            outputFormat: Audio.AndroidOutputFormat?.MPEG_4 ?? 2,
-            audioEncoder: Audio.AndroidAudioEncoder?.AAC ?? 3,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          ios: {
-            extension: '.m4a',
-            outputFormat: Audio.IOSOutputFormat?.MPEG4AAC ?? 'aac ',
-            audioQuality: Audio.IOSAudioQuality?.MEDIUM ?? 64,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 32000
-          },
-          web: {
-            mimeType: 'audio/webm',
-            bitsPerSecond: 32000
+        if (!uri) {
+          setAiError('Не вдалося отримати аудіозапис. Спробуйте ще раз.');
+          return;
+        }
+
+        if (uri && FileSystem) {
+          try {
+            const base64 = await FileSystem.readAsStringAsync(uri, {
+              encoding: FileSystem.EncodingType?.Base64 || 'base64'
+            });
+            try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (e) {}
+            if (!base64 || base64.length < 100) {
+              setAiError('Запис порожній або занадто короткий. Спробуйте ще раз.');
+              return;
+            }
+            const lowerUri = uri.toLowerCase();
+            const detectedMime = lowerUri.endsWith('.aac') ? 'audio/aac' : 'audio/m4a';
+            await handleAskAI('', base64, detectedMime);
+          } catch (readErr) {
+            setAiError('Не вдалося прочитати аудіозапис: ' + (readErr?.message || ''));
           }
-        };
-
-        const { recording } = await Audio.Recording.createAsync(geminiPreset);
-
-        recordingRef.current = recording;
-        setIsRecording(true);
-      } catch (e) {
+        }
+      } else {
         await stopAndCleanupRecording();
-        setAiError('Не вдалося почати запис: ' + (e?.message || ''));
-        setIsRecording(false);
+        try {
+          setAiError('');
+          const perm = await Audio.requestPermissionsAsync();
+          if (perm.status !== 'granted') {
+            setAiError('Немає дозволу на використання мікрофона.');
+            return;
+          }
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false
+          });
+          // Невелика пауза для звільнення нативного MediaRecorder на Android
+          await new Promise(r => setTimeout(r, 120));
+
+          const { recording } = await Audio.Recording.createAsync(getGeminiRecordingPreset(Audio));
+
+          recordingRef.current = recording;
+          setIsRecording(true);
+        } catch (e) {
+          await stopAndCleanupRecording();
+          setAiError('Не вдалося почати запис: ' + (e?.message || ''));
+          setIsRecording(false);
+        }
       }
+    } finally {
+      voiceBusyRef.current = false;
     }
   };
 
